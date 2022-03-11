@@ -1,0 +1,23 @@
+{
+  "name": "ethproxy",
+  "version": "0.0.1",
+  "description": "proxy for eth-like nodes",
+  "main": "index.js",
+  "author": "ShiningRay",
+  "license": "MIT",
+  "private": false,
+  "dependencies": {
+    "lodash": "^4.17.21",
+    "node-jsonrpc-client": "^2.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node src/index.ts"
+  },
+  "devDependencies": {
+    "@types/lodash": "^4.14.179",
+    "@types/node": "^17.0.21",
+    "ts-node": "^10.7.0",
+    "typescript": "^4.6.2"
+  }
+}
