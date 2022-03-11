@@ -3,6 +3,7 @@ import { JsonRpc, JsonRpcResult } from "node-jsonrpc-client";
 import { readFileSync, writeFile, writeFileSync } from 'fs';
 import * as fs from 'fs';
 import TelegramBot from "node-telegram-bot-api";
+import { URL } from 'url';
 
 interface ServerDefinition {
   name: string;
@@ -34,9 +35,11 @@ class Server {
   public state: State = State.pending;
   private client: JsonRpc;
   private _blockHeight?: number;
+  private _url: URL;
 
   constructor(config: ServerDefinition) {
     this.config = config;
+    this._url = new URL(this.config.url);
     this.client = new JsonRpc(config.url);
   }
 
@@ -47,6 +50,16 @@ class Server {
 
   public get url() {
     return this.config.url;
+  }
+
+  public get host() {
+    return this._url.host;
+  }
+  public get hostname() {
+    return this._url.hostname;
+  }
+  public get port() {
+    return this._url.port;
   }
 
   public get name() {
@@ -204,7 +217,7 @@ class Monitor {
 
   public generateNginxUpstreams() {
     const serverList = this.servers.map(server =>
-      `server ${server.url} ${this.primaryServer === server ? '' : 'down'};`
+      `server ${server.host} ${this.primaryServer === server ? '' : 'down'};`
     ).join('\n');
     const content = `upstream ${this.config.nginx.upstreamName} {
       ${serverList}
