@@ -1,0 +1,12 @@
+module.exports = {
+  nginx: {
+    pidPath: '',
+    upstreamPath: '/tmp/testnet.conf',
+  },
+  servers: [
+    {
+      name: 'test',
+      url: 'http://localhost:8204'
+    }
+  ]
+}

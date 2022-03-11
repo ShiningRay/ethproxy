@@ -1,6 +1,6 @@
 import { includes, pull } from "lodash";
 import { JsonRpc, JsonRpcResult } from "node-jsonrpc-client";
-
+import { readFileSync, writeFile, writeFileSync } from 'fs';
 
 interface ServerDefinition {
   name: string;
@@ -43,6 +43,14 @@ class Server {
     return this._blockHeight;
   }
 
+  public get url() {
+    return this.config.url;
+  }
+
+  public get name() {
+    return this.config.name;
+  }
+
   public async getNetVersion() {
     const result: JsonRpcResult<string> = await this.client.call<[], string>('net_version', []);
     return result.result;
@@ -53,6 +61,7 @@ class Server {
     const result: JsonRpcResult<string> = await this.client.call<[], string>('eth_blockNumber', []);
     if (result.result) {
       this._blockHeight = parseInt(result.result, 16);
+      console.log(this.name, this.url, 'block height: ', this._blockHeight)
       this.state = State.active;
     }
     return this._blockHeight;
@@ -60,6 +69,11 @@ class Server {
 }
 
 interface ConfigDefition {
+  nginx: {
+    pidPath: string;
+    upstreamPath: string;
+    upstreamName: string;
+  }
   servers: ServerDefinition[];
   checkInterval: number;
 }
@@ -92,7 +106,7 @@ class Monitor {
     const tasks = this.servers.map(s => {
       return s.getBlockHeight().catch(e => {
         s.state = State.down;
-        console.error(`${s.config.name} is down: ${e.message}`);
+        console.error(`${s.name} ${s.url} is down: ${e.message}`);
       });
     });
     await Promise.all(tasks);
@@ -104,6 +118,7 @@ class Monitor {
     // if last primary server is included in these servers, then don't change primary server.
     if (!includes(maxServers, this.primaryServer)) {
       this.primaryServer = maxServers[0];
+      this.generateNginxUpstreams();
     }
     this.checkTimer = setTimeout(() => {
       this.check();
@@ -118,6 +133,7 @@ class Monitor {
     for (let s of this.servers) {
       try {
         const v = await s.getNetVersion();
+        console.log(s.name, s.url, 'net_version: ', v)
         if (!version) {
           version = v
         } else {
@@ -134,24 +150,22 @@ class Monitor {
 
 
   public generateNginxUpstreams() {
-    const serverList = servers.map(server =>
-      `server ${server.url};`
+    const serverList = this.servers.map(server =>
+      `server ${server.url} ${this.primaryServer === server ? '' : 'down'};`
     ).join('\n');
-    return `upstream servers {
+    const content = `upstream ${this.config.nginx.upstreamName} {
       ${serverList}
     }`;
+
+    writeFileSync(this.config.nginx.upstreamPath, content);
+    const nginxPid = parseInt(readFileSync(this.config.nginx.pidPath).toString());
+    if (!isNaN(nginxPid)) {
+      console.log('reloading nginx')
+      process.kill(nginxPid, 'SIGHUP')
+    }
   }
 }
 
-const servers: ServerDefinition[] = [
-  {
-    name: 'test',
-    url: 'http://localhost:8204'
-  }
-]
 
-
-
-function main() {
-
-}
+const mon = new Monitor(require(__dirname + '/../config.js'));
+mon.start()
