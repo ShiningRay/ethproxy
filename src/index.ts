@@ -1,6 +1,8 @@
-import { includes, pull } from "lodash";
+import { includes, map, pull } from "lodash";
 import { JsonRpc, JsonRpcResult } from "node-jsonrpc-client";
 import { readFileSync, writeFile, writeFileSync } from 'fs';
+import * as fs from 'fs';
+import TelegramBot from "node-telegram-bot-api";
 
 interface ServerDefinition {
   name: string;
@@ -74,8 +76,58 @@ interface ConfigDefition {
     upstreamPath: string;
     upstreamName: string;
   }
+  telegram?: {
+    botToken?: string;
+  }
   servers: ServerDefinition[];
   checkInterval: number;
+}
+
+class TelegramAlertBot {
+  private bot;
+  private chatIds: Set<number> = new Set();
+  private chatIdsPath = '/tmp/chatIds';
+  constructor(token: string) {
+    this.bot = new TelegramBot(token, { polling: true })
+
+    if (fs.existsSync(this.chatIdsPath)) {
+      const ids = readFileSync(this.chatIdsPath).toString().split(',')
+      for (const id of ids) {
+        this.chatIds.add(parseInt(id));
+      }
+    }
+    console.log(this.chatIds)
+    this.bot.onText(/\/monitor/, (msg) => {
+      console.log('received bot instruction')
+      this.addChatId(msg.chat.id);
+      this.bot.sendMessage(msg.chat.id, "ready to send alert of godwoken nodes");
+    })
+
+    this.bot.onText(/\/stop/, (msg) => {
+      this.removeChatId(msg.chat.id);
+      this.bot.sendMessage(msg.chat.id, "stop sending alert of godwoken nodes");
+    })
+  }
+
+  private addChatId(id: number) {
+    this.chatIds.add(id);
+    console.log(this.chatIds)
+    writeFileSync(this.chatIdsPath, Array.from(this.chatIds).join(','));
+  }
+
+  private removeChatId(id: number) {
+    this.chatIds.delete(id);
+    console.log(this.chatIds)
+    writeFileSync(this.chatIdsPath, Array.from(this.chatIds).join(','));
+  }
+
+  async send(message: string) {
+    const promises = []
+    for (let id of this.chatIds) {
+      promises.push(this.bot.sendMessage(id, message))
+    }
+    return Promise.all(promises);
+  }
 }
 
 class Monitor {
@@ -83,19 +135,18 @@ class Monitor {
   private checkTimer?: NodeJS.Timeout;
   private servers: Server[] = [];
   private primaryServer?: Server;
+  private bot?: TelegramAlertBot;
 
   constructor(private config: ConfigDefition) {
     this.servers = config.servers.map(s => new Server(s));
+    if (config.telegram && config.telegram.botToken) {
+      this.bot = new TelegramAlertBot(config.telegram.botToken);
+    }
   }
 
   public async start() {
     await this.checkVersions();
     await this.check();
-  }
-
-  // send alert to telegram.
-  public async alert(receiver: string, content: string) {
-
   }
 
   // perform a check against all backend servers.
@@ -106,7 +157,9 @@ class Monitor {
     const tasks = this.servers.map(s => {
       return s.getBlockHeight().catch(e => {
         s.state = State.down;
-        console.error(`${s.name} ${s.url} is down: ${e.message}`);
+        const msg = `${s.name} ${s.url} is down: ${e.message}`;
+        console.error(msg);
+        this.bot?.send(msg);
       });
     });
     await Promise.all(tasks);
