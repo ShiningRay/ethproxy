@@ -7,6 +7,9 @@
   "license": "MIT",
   "private": false,
   "dependencies": {
+    "axios": "^0.26.1",
+    "fastify": "^3.27.4",
+    "json-rpc-protocol": "^0.13.2",
     "lodash": "^4.17.21",
     "node-jsonrpc-client": "^2.0.0",
     "node-telegram-bot-api": "^0.56.0"
