@@ -1,12 +1,21 @@
 module.exports = {
   nginx: {
-    pidPath: '',
+    pidPath: '/www/server/nginx/logs/nginx.pid',
     upstreamPath: '/tmp/testnet.conf',
+    upstreamName: 'testnet'
+  },
+  telegram: {
+    botToken: '111:xxx-xxx'
   },
   servers: [
     {
       name: 'test',
-      url: 'http://localhost:8204'
+      url: 'http://172.29.223.7:8024'
+    },
+    {
+      name: 'test2',
+      url: 'http://172.29.223.2:3000'
     }
-  ]
+  ],
+  checkInterval: 15000
 }

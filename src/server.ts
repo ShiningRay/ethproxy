@@ -5,10 +5,15 @@ const server: FastifyInstance = Fastify({ logger: true })
 import axios from 'axios';
 import * as path from 'path';
 const config = require('../config.js');
+interface JSONRPCRequest {
+  jsonrpc: string;
+  id: string | number;
+  method: string;
+  params: any[];
+}
 server.post('/', async (req, rep) => {
   const s = config.servers[0].url;
-  console.log(req.body);
-  console.log(JSON.stringify(req.body));
+  const { method, params } = req.body as JSONRPCRequest;
   const r = await axios.post(s, req.body)
   return r.data;
 })
