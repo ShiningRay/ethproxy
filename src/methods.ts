@@ -34,7 +34,51 @@ const methods: Record<string, ProxyMiddleware> = {
     } else {
       return ctx.cache.wrap(`block/${hash}${full ? '+' : ''}`, request);
     }
-  }
+  },
+  async eth_getTransactionByHash(ctx: App, params: any[], request) {
+    const txHash: string = params[0];
+    const cacheKey = `tx/${txHash}`;
+    let tx: eth.Transaction | undefined = await ctx.cache.get(cacheKey);
+    if (tx) {
+      return tx;
+    }
+    tx = await request();
+    if (!tx) {
+      throw new Error('No such transaction');
+    }
+    // we don't store pending transactions
+    if (tx.blockHash && tx.blockNumber && tx.transactionIndex) {
+      ctx.cache.set(cacheKey, tx);
+      ctx.cache.set(`tx/${tx.blockHash}#${tx.transactionIndex}`, tx);
+    }
+    return tx;
+  },
+  async eth_getTransactionByBlockHashAndIndex(ctx: App, params: any[], request) {
+    const blockHash: string = params[0];
+    const index: string = params[1];
+    const cacheKey = `tx/${blockHash}#${index}`;
+    let tx: eth.Transaction | undefined = await ctx.cache.get(cacheKey);
+    if (tx) {
+      return tx;
+    }
+    tx = await request();
+    if (!tx) {
+      throw new Error('No such transaction');
+    }
+    // we don't store pending transactions
+    if (tx.blockHash && tx.blockNumber && tx.transactionIndex) {
+      ctx.cache.set(cacheKey, tx);
+      ctx.cache.set(`tx/${tx.hash}`, tx);
+    }
+    return tx;
+  },
+
+  // if transaction receipt is available, then the transaction must be committed to chain
+  async eth_getTransactionReceipt(ctx: App, params: any[], request) {
+    const hash: string = params[0]
+    const cacheKey = `txReceipt/${hash}`;
+    return ctx.cache.wrap(cacheKey, request);
+  },
 }
 
 export default methods;
