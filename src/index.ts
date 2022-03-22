@@ -87,7 +87,10 @@ class Monitor implements App {
     }
 
     this.proxyServer.post('/', async (req, rep) => {
-      const s = config.servers[0].url;
+      const s = this.primaryServer;
+      if (!s) { // backend server is all down
+        return rep.code(502)
+      }
       const { method, params, jsonrpc, id } = req.body as JSONRPCRequest;
 
       if (method in methods) {
@@ -95,7 +98,7 @@ class Monitor implements App {
         if (typeof m === 'function') {
           const result = await m(
             this, params, async () => {
-              const r = await axios.post(s, req.body)
+              const r = await axios.post(s.url, req.body)
               console.debug('origin', r.data);
               return r.data.result;
             })
