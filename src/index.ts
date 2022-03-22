@@ -7,8 +7,12 @@ import axios from 'axios';
 import methods from './methods';
 import Server from "./server";
 import { App, JSONRPCRequest, ServerDefinition, State, ConfigDefition } from './core'
-import { Cache } from "cache-manager";
+import { Cache, Store } from "cache-manager";
 import * as CacheManager from 'cache-manager'
+
+const cacheStores: Record<string, Store> = {
+  'fs-hash': require('cache-manager-fs-hash')
+}
 
 class TelegramAlertBot {
   private bot;
@@ -81,6 +85,9 @@ class Monitor implements App {
 
   constructor(public config: ConfigDefition) {
     this.servers = config.servers.map(s => new Server(s));
+    if (typeof config.cache.store === 'string' && cacheStores[config.cache.store]) {
+      config.cache.store = cacheStores[config.cache.store] as Store;
+    }
     this.cache = CacheManager.caching(config.cache);
     if (config.telegram && config.telegram.botToken) {
       this.bot = new TelegramAlertBot(config.telegram.botToken);
@@ -110,7 +117,7 @@ class Monitor implements App {
           }
         }
       } else {
-        const r = await axios.post(s, req.body)
+        const r = await axios.post(s.url, req.body)
         return r.data;
       }
     })
