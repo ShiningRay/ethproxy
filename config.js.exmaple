@@ -17,5 +17,15 @@ module.exports = {
       url: 'http://172.29.223.2:3000'
     }
   ],
-  checkInterval: 15000
+  checkInterval: 15000,
+  cache: {
+    store: fsStore,
+    options: {
+        path: 'diskcache', //path for cached files
+        ttl: 60 * 60,      //time to life in seconds
+        subdirs: true,     //create subdirectories to reduce the
+                           //files in a single dir (default: false)
+        zip: true,         //zip files to save diskspace (default: false)
+    }
+  }
 }

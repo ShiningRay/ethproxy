@@ -1,100 +1,14 @@
 import { includes, map, pull } from "lodash";
-import { JsonRpc, JsonRpcResult } from "node-jsonrpc-client";
 import { readFileSync, writeFile, writeFileSync } from 'fs';
 import * as fs from 'fs';
 import TelegramBot from "node-telegram-bot-api";
-import { URL } from 'url';
-
-interface ServerDefinition {
-  name: string;
-  url: string;
-}
-
-enum State {
-  pending,
-  active,
-  down
-}
-
-function findMax(arr: Server[]) {
-  const arr2 = arr.sort((a, b) => (b.blockHeight || 0) - (a.blockHeight || 0));
-  const fastServers = [arr2[0]]
-  const max = arr2[0].blockHeight;
-  for (let i = 1; i < arr2.length; i++) {
-    if (arr2[i].blockHeight === max) {
-      fastServers.push(arr2[i]);
-    } else {
-      break;
-    }
-  }
-  return fastServers;
-}
-
-class Server {
-  public readonly config: ServerDefinition;
-  public state: State = State.pending;
-  private client: JsonRpc;
-  private _blockHeight?: number;
-  private _url: URL;
-
-  constructor(config: ServerDefinition) {
-    this.config = config;
-    this._url = new URL(this.config.url);
-    this.client = new JsonRpc(config.url);
-  }
-
-  // return the block height last fetched
-  public get blockHeight() {
-    return this._blockHeight;
-  }
-
-  public get url() {
-    return this.config.url;
-  }
-
-  public get host() {
-    return this._url.host;
-  }
-  public get hostname() {
-    return this._url.hostname;
-  }
-  public get port() {
-    return this._url.port;
-  }
-
-  public get name() {
-    return this.config.name;
-  }
-
-  public async getNetVersion() {
-    const result: JsonRpcResult<string> = await this.client.call<[], string>('net_version', []);
-    return result.result;
-  }
-
-  // get block height from backend server. and store the blockheight to instance variable
-  public async getBlockHeight() {
-    const result: JsonRpcResult<string> = await this.client.call<[], string>('eth_blockNumber', []);
-    if (result.result) {
-      this._blockHeight = parseInt(result.result, 16);
-      console.log(this.name, this.url, 'block height: ', this._blockHeight)
-      this.state = State.active;
-    }
-    return this._blockHeight;
-  }
-}
-
-interface ConfigDefition {
-  nginx: {
-    pidPath: string;
-    upstreamPath: string;
-    upstreamName: string;
-  }
-  telegram?: {
-    botToken?: string;
-  }
-  servers: ServerDefinition[];
-  checkInterval: number;
-}
+import Fastify, { FastifyInstance, RouteShorthandOptions } from 'fastify'
+import axios from 'axios';
+import methods from './methods';
+import Server from "./server";
+import { App, JSONRPCRequest, ServerDefinition, State, ConfigDefition } from './core'
+import { Cache } from "cache-manager";
+import * as CacheManager from 'cache-manager'
 
 class TelegramAlertBot {
   private bot;
@@ -143,23 +57,71 @@ class TelegramAlertBot {
   }
 }
 
-class Monitor {
+function findMax(arr: Server[]) {
+  const arr2 = arr.sort((a, b) => (b.blockHeight || 0) - (a.blockHeight || 0));
+  const fastServers = [arr2[0]]
+  const max = arr2[0].blockHeight;
+  for (let i = 1; i < arr2.length; i++) {
+    if (arr2[i].blockHeight === max) {
+      fastServers.push(arr2[i]);
+    } else {
+      break;
+    }
+  }
+  return fastServers;
+}
+class Monitor implements App {
   public tipBlockHeight: number = 0;
   private checkTimer?: NodeJS.Timeout;
-  private servers: Server[] = [];
-  private primaryServer?: Server;
+  public servers: Server[] = [];
+  public primaryServer?: Server;
   private bot?: TelegramAlertBot;
+  public proxyServer: FastifyInstance = Fastify({ logger: true })
+  public cache: Cache;
 
-  constructor(private config: ConfigDefition) {
+  constructor(public config: ConfigDefition) {
     this.servers = config.servers.map(s => new Server(s));
+    this.cache = CacheManager.caching(config.cache);
     if (config.telegram && config.telegram.botToken) {
       this.bot = new TelegramAlertBot(config.telegram.botToken);
     }
+
+    this.proxyServer.post('/', async (req, rep) => {
+      const s = config.servers[0].url;
+      const { method, params, jsonrpc, id } = req.body as JSONRPCRequest;
+
+      if (method in methods) {
+        const m = methods[method];
+        if (typeof m === 'function') {
+          const result = await m(
+            this, params, async () => {
+              const r = await axios.post(s, req.body)
+              console.debug('origin', r.data);
+              return r.data.result;
+            })
+          console.debug('processed', result);
+          return {
+            jsonrpc,
+            id,
+            result
+          }
+        }
+      } else {
+        const r = await axios.post(s, req.body)
+        return r.data;
+      }
+    })
+  }
+
+  public selectAvailableServer() {
+    return this.servers.find((s) => s.state === State.active)
   }
 
   public async start() {
     await this.checkVersions();
     await this.check();
+    // start server
+    await this.proxyServer.listen(process.env.PORT || 3000)
   }
 
   // perform a check against all backend servers.
@@ -184,7 +146,9 @@ class Monitor {
     // if last primary server is included in these servers, then don't change primary server.
     if (!includes(maxServers, this.primaryServer)) {
       this.primaryServer = maxServers[0];
-      this.generateNginxUpstreams();
+      if (this.config.nginx) {
+        this.generateNginxUpstreams();
+      }
     }
     this.checkTimer = setTimeout(() => {
       this.check();
@@ -232,6 +196,6 @@ class Monitor {
   }
 }
 
-
+console.log(require(__dirname + '/../config.js'));
 const mon = new Monitor(require(__dirname + '/../config.js'));
 mon.start()
