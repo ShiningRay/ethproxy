@@ -1,0 +1,54 @@
+# Ethereum Proxy
+This proxy middleware can talk to multiple ethereum rpc nodes to offer failover, caching, load balancing to clients.
+
+## Principle
+
+Although Ethereum node is inherently distributed. But each ethereum node can differ in synchronization speed.
+When using traditional load balance middleware such as nginx/haproxy, etc, the client may get inconsistent responses between requests.
+For example:
+
+If there are two ethereum nodes, one node A has better CPUs/memories then the other one B.
+So it's common that A will synchronize faster than B.
+If you use a load balancer to A and B. 
+First the client requests the tip block number, and receive the result from A with a higher block number a.
+Then the client requests the block information for that number a.
+But node B has not catch up with A and have no block information with #a, and the request from client fails.
+
+In order to fix that problem. We wrote this proxy middleware.
+
+And we know that the history data of the chain is immutable, so this data can be cached to mitigate the backend servers' load.
+But JSON-RPC uses HTTP POST methods to do communication, which are not cachable for HTTP Proxy middlewares.
+So in order to implements caching, we must do our own application-level middleware.
+
+
+## Proxy Middleware
+
+Developers can override specific JSON-RPC methods in `src/methods.ts` to implement caching or load balance mechenism.
+If proxy server detects the middleware methods with same name exists in methods module, then proxy will use this methods to handle the request.
+Otherwise, proxy server will redirect the request to the primary backend server.
+
+The middleware methods accept three arguments: 
+
+```typescript
+export type ProxyMiddleware = (app: App, params: any[], request: (newParams?: any[]) => Promise<any>) => any;
+```
+
+This is defined in `src/core.ts`
+
+* `app` represent the proxy server itself
+* `params` is the origin params sent from client.
+* `request` is the origin request to backend server. 
+
+Developer can invoke `request()` to obtain a response from backend server with origin params. 
+Besides, developer can offer new params to `request` method in case developer wants to override original params.
+
+
+## Installation
+
+## Test
+
+```bash
+curl -X POST  -H 'Content-Type: application/json' \
+     --data '{"jsonrpc":"2.0","method":"eth_getBlockTransactionCountByHash","params":["0xcc96ca39de830060a81d03445eea0e1bf6562c8008607fd4187171db3367645f"],"id":1}' \
+     http://localhost:3000
+```

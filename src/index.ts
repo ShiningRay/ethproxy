@@ -104,8 +104,8 @@ class Monitor implements App {
         const m = methods[method];
         if (typeof m === 'function') {
           const result = await m(
-            this, params, async () => {
-              const r = await axios.post(s.url, req.body)
+            this, params, async (newParams?: any[]) => {
+              const r = await axios.post(s.url, newParams ? { ...(req.body as JSONRPCRequest), params: newParams } : req.body)
               console.debug('origin', r.data);
               return r.data.result;
             })

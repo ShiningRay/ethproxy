@@ -51,3 +51,20 @@ export interface TransactionReceipt {
   logsBloom: string;
   status: TransactionStatus;
 }
+
+export interface CallParams {
+  from: string | null | undefined;
+  to: string;
+  gas?: string;
+  gasPrice?: string;
+  value?: string;
+  data: string;
+}
+
+export interface GetLogParams {
+  fromBlock?: string;
+  toBlock?: string;
+  address?: string | string[];
+  topics?: string[]
+  blockhash?: string;
+}

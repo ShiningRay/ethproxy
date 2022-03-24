@@ -43,4 +43,4 @@ export interface App {
   cache: Cache;
 }
 
-export type ProxyMiddleware = (app: App, params: any[], request: () => Promise<any>) => any;
+export type ProxyMiddleware = (app: App, params: any[], request: (newParams?: any[]) => Promise<any>) => any;
