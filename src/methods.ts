@@ -1,6 +1,8 @@
 import { App, ProxyMiddleware } from "./core";
 import * as eth from './eth';
 import { Cache } from 'cache-manager'
+import { JsonRpcResult } from "node-jsonrpc-client";
+import { sum } from "lodash";
 function cacheBlock(cache: Cache, block: eth.Block, full: boolean) {
   const k1 = `block/${block.number}${full ? '+' : ''}`
   const k2 = `block/${block.hash}${full ? '+' : ''}`
@@ -199,7 +201,14 @@ const methods: Record<string, ProxyMiddleware> = {
     const address: string[] = q.address ? (typeof q.address === 'string' ? [q.address] : q.address) : [];
     const topics: string = q.topics ? q.topics.join(',') : ''
     return ctx.cache.wrap(`logs/${q.fromBlock}-${q.toBlock}?${address.join(',')}&${topics}`, () => request([q]));
-  }
+  },
+
+  // maybe just use primary servers'
+  async net_peerCount(ctx: App, params: any[], request) {
+    const results: JsonRpcResult<string>[] = await Promise.all(ctx.servers.map(s => s.client.call<[], string>('net_peerCount', [])))
+    console.log(results);
+    return sum(results.map(r => r.result ? parseInt(r.result, 16) : 0))
+  },
 }
 
 export default methods;

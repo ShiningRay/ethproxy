@@ -5,7 +5,7 @@ import { ServerDefinition, State } from "./core";
 export default class Server {
   public readonly config: ServerDefinition;
   public state: State = State.pending;
-  private client: JsonRpc;
+  public client: JsonRpc;
   private _blockHeight?: number;
   private _url: URL;
 
