@@ -74,7 +74,8 @@ function findMax(arr: Server[]) {
   }
   return fastServers;
 }
-class Monitor implements App {
+
+export class Monitor implements App {
   public tipBlockHeight: number = 0;
   private checkTimer?: NodeJS.Timeout;
   public servers: Server[] = [];

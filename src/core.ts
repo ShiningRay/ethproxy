@@ -38,7 +38,7 @@ export interface App {
   tipBlockHeight: number;
   servers: Server[];
   primaryServer?: Server;
-  proxyServer: FastifyInstance
+  proxyServer?: FastifyInstance
   selectAvailableServer(): Server | undefined;
   cache: Cache;
 }
