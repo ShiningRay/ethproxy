@@ -133,7 +133,7 @@ export class Monitor implements App {
     await this.checkVersions();
     await this.check();
     // start server
-    await this.proxyServer.listen(process.env.PORT || 3000)
+    await this.proxyServer.listen(process.env.PORT || 3000, '0.0.0.0')
   }
 
   // perform a check against all backend servers.
