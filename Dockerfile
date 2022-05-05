@@ -1,6 +1,6 @@
 FROM node:14-alpine AS builder
 WORKDIR /usr/src/app
-COPY package*.json ./
+COPY package*.json yarn.lock ./
 RUN yarn
 COPY tsconfig*.json ./
 COPY src src
@@ -12,7 +12,7 @@ RUN apk add --no-cache tini
 WORKDIR /usr/src/app
 RUN chown node:node .
 USER node
-COPY package*.json ./
+COPY package*.json yarn.lock ./
 RUN yarn install --production
 COPY --from=builder /usr/src/app/build/ build/
 EXPOSE 3000

@@ -9,6 +9,7 @@ import Server from "./server";
 import { App, JSONRPCRequest, ServerDefinition, State, ConfigDefition } from './core'
 import { Cache, Store } from "cache-manager";
 import * as CacheManager from 'cache-manager'
+import * as path from 'path';
 
 const cacheStores: Record<string, Store> = {
   'fs-hash': require('cache-manager-fs-hash')
@@ -206,7 +207,14 @@ export class Monitor implements App {
     }
   }
 }
-
-console.log(require(__dirname + '/../config.js'));
-const mon = new Monitor(require(__dirname + '/../config.js'));
+let configPath = process.argv[2];
+if (!configPath || configPath === '') {
+  configPath = __dirname + '/../config.js';
+} else {
+  configPath = path.join(process.cwd(), configPath);
+}
+console.log(configPath);
+const Config = require(configPath);
+console.log(Config);
+const mon = new Monitor(Config);
 mon.start()
