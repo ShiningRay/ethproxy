@@ -22,6 +22,13 @@ const cacheSchema = z.object({
   backend: z.enum(["memory", "redis"]).default("memory"),
   shortTtlMs: z.number().int().positive().default(2000),
   pendingTtlMs: z.number().int().positive().default(1000),
+  /**
+   * When enabled, the short TTL is derived from the observed block interval
+   * (blockInterval / 4, clamped to [minTtlMs, shortTtlMs]). shortTtlMs then
+   * acts as the ceiling and as the fallback before an estimate exists.
+   */
+  dynamicTtl: z.boolean().default(true),
+  minTtlMs: z.number().int().positive().default(200),
   finalityDepth: z.number().int().nonnegative().default(64),
   memory: z
     .object({

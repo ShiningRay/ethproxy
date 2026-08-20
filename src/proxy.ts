@@ -22,7 +22,31 @@ const NO_RETRY_METHODS = new Set([
   "eth_signTransaction",
 ]);
 
+/**
+ * Effective short TTL for head-dependent data. With dynamicTtl enabled and
+ * a block-time estimate available, use blockInterval / 4 clamped to
+ * [minTtlMs, shortTtlMs]; otherwise fall back to the configured shortTtlMs.
+ */
+export function computeShortTtlMs(
+  estimatedBlockIntervalMs: number | null,
+  cfg: { dynamicTtl: boolean; minTtlMs: number; shortTtlMs: number },
+): number {
+  if (!cfg.dynamicTtl || estimatedBlockIntervalMs === null) {
+    return cfg.shortTtlMs;
+  }
+  return Math.min(
+    cfg.shortTtlMs,
+    Math.max(cfg.minTtlMs, Math.round(estimatedBlockIntervalMs / 4)),
+  );
+}
+
 export class ProxyHandler {
+  /**
+   * In-flight upstream fetches keyed by cache key (single-flight): concurrent
+   * misses for the same key share one upstream request instead of stampeding.
+   */
+  private readonly inflight = new Map<string, Promise<JsonRpcResponse>>();
+
   constructor(
     private readonly pool: UpstreamPool,
     private readonly cache: ResponseCache,
@@ -49,7 +73,10 @@ export class ProxyHandler {
   private ruleCtx(): CacheRuleContext {
     return {
       chainHead: this.pool.chainHead,
-      shortTtlMs: this.config.cache.shortTtlMs,
+      shortTtlMs: computeShortTtlMs(
+        this.pool.estimatedBlockIntervalMs,
+        this.config.cache,
+      ),
       pendingTtlMs: this.config.cache.pendingTtlMs,
       finalityDepth: this.config.cache.finalityDepth,
     };
@@ -88,30 +115,29 @@ export class ProxyHandler {
       }),
     );
 
-    // 2. Forward the misses as one batch, then merge by id.
-    if (misses.length > 0) {
-      const responses = await this.forwardBatch(misses.map((m) => m.request));
+    // 2. Non-cacheable misses go upstream as one batch, merged by id.
+    //    Cacheable misses go through the single-flight path per key.
+    const plainMisses = misses.filter((m) => m.key === null);
+    const cacheableMisses = misses.filter((m) => m.key !== null);
+
+    if (plainMisses.length > 0) {
+      const responses = await this.forwardBatch(plainMisses.map((m) => m.request));
       const byId = new Map<string, JsonRpcResponse>();
       for (const r of responses) byId.set(JSON.stringify(r.id), r);
 
-      await Promise.all(
-        misses.map(async ({ index, request, key }) => {
-          const response = byId.get(JSON.stringify(request.id));
-          if (!response) {
-            results[index] = errorResponse(
-              request.id,
-              -32003,
-              "upstream did not answer this batch item",
-            );
-            return;
-          }
-          results[index] = response;
-          if (key !== null && response.error === undefined) {
-            await this.storeResult(request, response, key, ctx);
-          }
-        }),
-      );
+      for (const { index, request } of plainMisses) {
+        const response = byId.get(JSON.stringify(request.id));
+        results[index] =
+          response ??
+          errorResponse(request.id, -32003, "upstream did not answer this batch item");
+      }
     }
+
+    await Promise.all(
+      cacheableMisses.map(async ({ index, request, key }) => {
+        results[index] = await this.fetchAndStore(request, key!, ctx);
+      }),
+    );
 
     return results as JsonRpcResponse[];
   }
@@ -125,23 +151,48 @@ export class ProxyHandler {
     const ctx = this.ruleCtx();
     const policy = requestPolicy(request.method, params, ctx);
 
-    let key: string | null = null;
     if (policy.cacheable) {
-      key = cacheKey(request.method, params);
+      const key = cacheKey(request.method, params);
       const cached = await this.cache.get(key);
       if (cached !== null) {
         return { jsonrpc: "2.0", id: request.id, result: JSON.parse(cached) };
       }
+      return this.fetchAndStore(request, key, ctx);
     }
 
     const [response] = await this.forwardBatch([request]);
-    if (!response) {
-      return errorResponse(request.id, -32003, "upstream error");
+    return response ?? errorResponse(request.id, -32003, "upstream error");
+  }
+
+  /**
+   * Fetch one cacheable entry from upstream with single-flight coalescing:
+   * the first miss for a key becomes the leader and performs the upstream
+   * call + cache store; concurrent followers await the same promise and
+   * receive the result with their own request id.
+   */
+  private fetchAndStore(
+    request: JsonRpcRequest,
+    key: string,
+    ctx: CacheRuleContext,
+  ): Promise<JsonRpcResponse> {
+    let pending = this.inflight.get(key);
+    if (pending === undefined) {
+      pending = (async () => {
+        const [response] = await this.forwardBatch([request]);
+        if (!response) {
+          return errorResponse(request.id, -32003, "upstream error");
+        }
+        if (response.error === undefined) {
+          await this.storeResult(request, response, key, ctx);
+        }
+        return response;
+      })();
+      this.inflight.set(key, pending);
+      void pending.finally(() => {
+        if (this.inflight.get(key) === pending) this.inflight.delete(key);
+      });
     }
-    if (key !== null && response.error === undefined) {
-      await this.storeResult(request, response, key, ctx);
-    }
-    return response;
+    return pending.then((response) => ({ ...response, id: request.id }));
   }
 
   /**

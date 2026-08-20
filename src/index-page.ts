@@ -53,6 +53,7 @@ export function renderIndexPage(meta: IndexPageMeta): string {
   <div class="cards">
     <div class="card"><div class="label">Chain ID</div><div class="value" id="chainId">–</div></div>
     <div class="card"><div class="label">Chain Head</div><div class="value" id="chainHead">–</div></div>
+    <div class="card"><div class="label">Block Time</div><div class="value" id="blockTime">–</div></div>
     <div class="card"><div class="label">Healthy Upstreams</div><div class="value" id="healthy">–</div></div>
     <div class="card"><div class="label">Cache Backend</div><div class="value">${meta.cacheBackend}</div></div>
   </div>
@@ -84,6 +85,10 @@ async function refresh() {
     document.getElementById("chainId").textContent = s.chainId ?? "–";
     document.getElementById("chainHead").textContent =
       s.chainHead === null ? "–" : s.chainHead.toLocaleString();
+    document.getElementById("blockTime").textContent =
+      s.estimatedBlockIntervalMs == null
+        ? "–"
+        : (s.estimatedBlockIntervalMs / 1000).toFixed(1) + "s";
     const healthy = s.upstreams.filter(u => u.healthy && !u.syncing).length;
     document.getElementById("healthy").textContent = healthy + " / " + s.upstreams.length;
     if (s.cache) {

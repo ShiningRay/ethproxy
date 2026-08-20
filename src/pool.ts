@@ -12,6 +12,10 @@ export class UpstreamPool {
   private timers: NodeJS.Timeout[] = [];
   /** Flat weighted selection list; each upstream appears `weight` times. */
   private selectionCursor = 0;
+  /** Rolling window of chain-head progress samples for block-time estimation. */
+  private headSamples: { elapsedMs: number; blocks: number }[] = [];
+  private lastObservedHead: number | null = null;
+  private lastObservedAt = 0;
 
   constructor(
     upstreamConfigs: UpstreamConfig[],
@@ -57,6 +61,38 @@ export class UpstreamPool {
       }
     }
     return best;
+  }
+
+  /**
+   * Record a chain-head observation. Called after every successful poll;
+   * exposed publicly so tests can drive it with synthetic values.
+   */
+  observeHead(head: number, now = Date.now()): void {
+    if (this.lastObservedHead !== null && head > this.lastObservedHead) {
+      this.headSamples.push({
+        elapsedMs: now - this.lastObservedAt,
+        blocks: head - this.lastObservedHead,
+      });
+      if (this.headSamples.length > 16) this.headSamples.shift();
+    }
+    if (head !== this.lastObservedHead) {
+      this.lastObservedHead = head;
+      this.lastObservedAt = now;
+    }
+  }
+
+  /**
+   * Rolling average time per block across recent head progress, or null
+   * when no progress has been observed yet.
+   */
+  get estimatedBlockIntervalMs(): number | null {
+    let elapsed = 0;
+    let blocks = 0;
+    for (const s of this.headSamples) {
+      elapsed += s.elapsedMs;
+      blocks += s.blocks;
+    }
+    return blocks === 0 ? null : elapsed / blocks;
   }
 
   start(): void {
@@ -123,6 +159,8 @@ export class UpstreamPool {
         u.healthy = true;
         this.logger?.info(`upstream ${u.name} is now healthy`);
       }
+      const head = this.chainHead;
+      if (head !== null) this.observeHead(head);
     } catch (err) {
       u.consecutiveFailures += 1;
       if (
@@ -182,11 +220,13 @@ export class UpstreamPool {
   status(): {
     chainHead: number | null;
     chainId: number | null;
+    estimatedBlockIntervalMs: number | null;
     upstreams: UpstreamStatus[];
   } {
     return {
       chainHead: this.chainHead,
       chainId: this.chainId,
+      estimatedBlockIntervalMs: this.estimatedBlockIntervalMs,
       upstreams: this.upstreams.map((u) => u.status()),
     };
   }

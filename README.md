@@ -12,7 +12,8 @@ Ethereum JSON-RPC 反向代理：多上游负载均衡与故障转移、同步�
   - 短 TTL（默认 2s）：`eth_blockNumber`、`eth_gasPrice`、带 `latest`/`safe`/`finalized` 标签的状态查询等链头相关数据
   - 不缓存：`eth_sendRawTransaction` 等写方法、`pending` 标签、未来区块、`admin_*`/`debug_*` 等管理命名空间、未识别方法（fail-safe）
 - **可插拔缓存后端**：内存 LRU（默认）或 Redis；实现 `CacheBackend` 接口即可扩展
-- **批量请求**：数组请求逐项走缓存管线，未命中项合并为单次批量转发后按 id 归并
+- **批量请求**：数组请求逐项走缓存管线，未命中项按缓存性分流（可缓存项走 single-flight，其余合并为单次批量转发）
+- **Single-flight 防拥堵**：同一缓存键的并发未命中只发一次上游请求，其余请求共享该结果，避免短 TTL 过期瞬间的惊群效应
 - **WebSocket 透传**：客户端 WS 连接固定到一个健康上游，帧双向原样转发；上游断开会关闭客户端连接，由客户端重连后落到健康节点（不做订阅状态管理）
 - **运维端点**：`GET /` 索引页（浏览器访问，实时展示链高与各上游状态）、`GET /healthz`（无健康上游返回 503）、`GET /status`（JSON 状态）
 
@@ -50,7 +51,8 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `health.failureThreshold` | 连续失败多少次摘除 | 3 |
 | `health.maxRetries` | 单请求最多尝试几个上游 | 2 |
 | `cache.backend` | `memory` 或 `redis` | `memory` |
-| `cache.shortTtlMs` | 链头相关数据 TTL | 2000 |
+| `cache.shortTtlMs` | 链头相关数据 TTL（dynamicTtl 开启时为上限/回退值） | 2000 |
+| `cache.dynamicTtl` | 按观测出块间隔动态调整短 TTL（间隔/4，钳制在 `[minTtlMs, shortTtlMs]`） | true |
 | `cache.finalityDepth` | 多少块深度视为不可变 | 64 |
 | `cache.redis.url` / `keyPrefix` | Redis 连接与键前缀 | — |
 

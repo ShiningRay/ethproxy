@@ -25,8 +25,10 @@ health:
 
 cache:
   backend: memory           # memory | redis（可扩展其他后端）
-  shortTtlMs: 2000          # 链头相关数据的短 TTL
+  shortTtlMs: 2000          # 链头相关数据的短 TTL（dynamicTtl 开启时作为上限与初始回退值）
   pendingTtlMs: 1000        # 未打包交易收据等的极短 TTL
+  dynamicTtl: true          # 按观测到的出块间隔动态调整短 TTL（间隔/4，钳制在 [minTtlMs, shortTtlMs]）
+  minTtlMs: 200             # 动态 TTL 下限
   finalityDepth: 64         # 区块号 ≤ 链头 - finalityDepth 视为不可变，永久缓存
 
   memory:

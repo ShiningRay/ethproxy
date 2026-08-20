@@ -24,6 +24,7 @@ afterEach(async () => {
 async function startMockNode(
   block: number,
   handlers: Record<string, (params: unknown[]) => unknown> = {},
+  delayMs = 0,
 ): Promise<MockNode> {
   let fail = false;
   const hits = new Map<string, number>();
@@ -38,28 +39,35 @@ async function startMockNode(
       const parsed = JSON.parse(body) as
         | { id: number | string; method: string; params?: unknown[] }
         | { id: number | string; method: string; params?: unknown[] }[];
-      const list = Array.isArray(parsed) ? parsed : [parsed];
-      const replies = list.map((call) => {
-        hits.set(call.method, (hits.get(call.method) ?? 0) + 1);
-        if (call.method === "eth_syncing") {
-          return { jsonrpc: "2.0", id: call.id, result: false };
-        }
-        if (call.method === "eth_blockNumber" && !handlers.eth_blockNumber) {
-          return { jsonrpc: "2.0", id: call.id, result: `0x${block.toString(16)}` };
-        }
-        const handler = handlers[call.method];
-        if (handler) {
-          return { jsonrpc: "2.0", id: call.id, result: handler(call.params ?? []) };
-        }
-        return {
-          jsonrpc: "2.0",
-          id: call.id,
-          error: { code: -32601, message: "method not found" },
-        };
-      });
-      res
-        .writeHead(200, { "content-type": "application/json" })
-        .end(JSON.stringify(Array.isArray(parsed) ? replies : replies[0]));
+      const respond = () => {
+        const list = Array.isArray(parsed) ? parsed : [parsed];
+        const replies = list.map((call) => {
+          hits.set(call.method, (hits.get(call.method) ?? 0) + 1);
+          if (call.method === "eth_syncing") {
+            return { jsonrpc: "2.0", id: call.id, result: false };
+          }
+          if (call.method === "eth_blockNumber" && !handlers.eth_blockNumber) {
+            return { jsonrpc: "2.0", id: call.id, result: `0x${block.toString(16)}` };
+          }
+          const handler = handlers[call.method];
+          if (handler) {
+            return { jsonrpc: "2.0", id: call.id, result: handler(call.params ?? []) };
+          }
+          return {
+            jsonrpc: "2.0",
+            id: call.id,
+            error: { code: -32601, message: "method not found" },
+          };
+        });
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify(Array.isArray(parsed) ? replies : replies[0]));
+      };
+      if (delayMs > 0) {
+        setTimeout(respond, delayMs);
+      } else {
+        respond();
+      }
     });
   });
   servers.push(server);
@@ -93,6 +101,8 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
       backend: "memory",
       shortTtlMs: 60000, // long enough for deterministic assertions
       pendingTtlMs: 1000,
+      dynamicTtl: false, // static TTL keeps tests deterministic
+      minTtlMs: 200,
       finalityDepth: 64,
       memory: { maxEntries: 1000 },
     },
@@ -229,6 +239,29 @@ describe("ProxyHandler", () => {
       params: [],
     });
     expect(res).toMatchObject({ error: { code: -32601 } });
+  });
+
+  it("coalesces concurrent identical requests (single-flight)", async () => {
+    const node = await startMockNode(1000, {}, 20); // 20ms latency ensures overlap
+    const { proxy } = await makeProxy([node]);
+    const baseline = node.hits.get("eth_blockNumber") ?? 0;
+
+    const makeReq = (id: number) => ({
+      jsonrpc: "2.0" as const,
+      id,
+      method: "eth_blockNumber",
+      params: [],
+    });
+    const responses = await Promise.all(
+      Array.from({ length: 10 }, (_, i) => proxy.handle(makeReq(i + 1))),
+    );
+
+    // 10 concurrent misses -> exactly 1 upstream call
+    expect(node.hits.get("eth_blockNumber")).toBe(baseline + 1);
+    // every follower still gets its own id and the shared result
+    responses.forEach((r, i) => {
+      expect(r).toMatchObject({ id: i + 1, result: "0x3e8" });
+    });
   });
 });
 
