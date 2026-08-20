@@ -96,6 +96,8 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
       maxBlockLag: 5,
       failureThreshold: 2,
       maxRetries: 2,
+      retryBaseDelayMs: 0,
+      retryMaxDelayMs: 0,
     },
     cache: {
       backend: "memory",
@@ -186,6 +188,29 @@ describe("ProxyHandler", () => {
       params: ["0xaddr", "latest"],
     });
     expect(res).toMatchObject({ result: "0xde0b6b3a7640000" });
+  });
+
+  it("applies exponential backoff between retry attempts", async () => {
+    const a = await startMockNode(1000);
+    const b = await startMockNode(1000, { eth_getBalance: () => "0x1" });
+    const { config, proxy } = await makeProxy([a, b]);
+    // ProxyHandler reads config at call time, so this takes effect.
+    config.health.retryBaseDelayMs = 50;
+    config.health.retryMaxDelayMs = 500;
+    a.setFail(true);
+
+    const started = Date.now();
+    const res = await proxy.handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_getBalance",
+      params: ["0xaddr", "latest"],
+    });
+    const elapsed = Date.now() - started;
+
+    expect(res).toMatchObject({ result: "0x1" });
+    // the second attempt must have waited ~retryBaseDelayMs
+    expect(elapsed).toBeGreaterThanOrEqual(40);
   });
 
   it("returns -32002 when no upstream is usable", async () => {

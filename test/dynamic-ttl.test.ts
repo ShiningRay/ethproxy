@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { UpstreamPool } from "../src/pool.js";
-import { computeShortTtlMs } from "../src/proxy.js";
+import { computeShortTtlMs, retryDelayMs } from "../src/proxy.js";
 import type { HealthConfig } from "../src/config.js";
 
 const health: HealthConfig = {
@@ -9,6 +9,8 @@ const health: HealthConfig = {
   maxBlockLag: 5,
   failureThreshold: 2,
   maxRetries: 2,
+  retryBaseDelayMs: 0,
+  retryMaxDelayMs: 0,
 };
 
 describe("UpstreamPool block-time estimation", () => {
@@ -37,6 +39,26 @@ describe("UpstreamPool block-time estimation", () => {
     expect(pool.estimatedBlockIntervalMs).toBeNull();
     pool.observeHead(91, 3000);
     expect(pool.estimatedBlockIntervalMs).toBe(2000);
+  });
+});
+
+describe("retryDelayMs", () => {
+  const cfg = { retryBaseDelayMs: 100, retryMaxDelayMs: 1000 };
+
+  it("doubles the delay per attempt", () => {
+    expect(retryDelayMs(1, cfg)).toBe(100);
+    expect(retryDelayMs(2, cfg)).toBe(200);
+    expect(retryDelayMs(3, cfg)).toBe(400);
+  });
+
+  it("caps at retryMaxDelayMs", () => {
+    expect(retryDelayMs(4, cfg)).toBe(800);
+    expect(retryDelayMs(5, cfg)).toBe(1000);
+    expect(retryDelayMs(10, cfg)).toBe(1000);
+  });
+
+  it("supports zero base delay (no backoff)", () => {
+    expect(retryDelayMs(3, { retryBaseDelayMs: 0, retryMaxDelayMs: 1000 })).toBe(0);
   });
 });
 

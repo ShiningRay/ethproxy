@@ -66,6 +66,8 @@ async function makeApp(wsUrl?: string) {
       maxBlockLag: 5,
       failureThreshold: 2,
       maxRetries: 2,
+  retryBaseDelayMs: 0,
+  retryMaxDelayMs: 0,
     },
     cache: {
       backend: "memory",
@@ -139,6 +141,8 @@ describe("WebSocket forwarding", () => {
         maxBlockLag: 5,
         failureThreshold: 2,
         maxRetries: 2,
+        retryBaseDelayMs: 0,
+        retryMaxDelayMs: 0,
       },
       cache: {
         backend: "memory",

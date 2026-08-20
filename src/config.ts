@@ -16,6 +16,9 @@ const healthSchema = z.object({
   maxBlockLag: z.number().int().nonnegative().default(5),
   failureThreshold: z.number().int().positive().default(3),
   maxRetries: z.number().int().positive().default(2),
+  /** First retry delay; doubles per attempt, capped at retryMaxDelayMs. */
+  retryBaseDelayMs: z.number().int().nonnegative().default(100),
+  retryMaxDelayMs: z.number().int().nonnegative().default(1000),
 });
 
 const cacheSchema = z.object({

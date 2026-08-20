@@ -41,6 +41,24 @@ export function computeShortTtlMs(
   );
 }
 
+/**
+ * Delay before retry attempt `attempt` (1-based: 1 = first retry).
+ * Exponential backoff: base * 2^(attempt-1), capped at max.
+ */
+export function retryDelayMs(
+  attempt: number,
+  cfg: { retryBaseDelayMs: number; retryMaxDelayMs: number },
+): number {
+  return Math.min(
+    cfg.retryMaxDelayMs,
+    cfg.retryBaseDelayMs * 2 ** (attempt - 1),
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class ProxyHandler {
   /**
    * In-flight upstream fetches keyed by cache key (single-flight): concurrent
@@ -252,7 +270,11 @@ export class ProxyHandler {
     }
 
     const payload = requests.length === 1 ? requests[0] : requests;
-    for (const upstream of picks) {
+    for (const [attemptIndex, upstream] of picks.entries()) {
+      // Exponential backoff between attempts (no delay before the first).
+      if (attemptIndex > 0) {
+        await sleep(retryDelayMs(attemptIndex, this.config.health));
+      }
       try {
         const body = await upstream.call(payload);
         const responses = Array.isArray(body) ? body : [body];

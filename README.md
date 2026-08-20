@@ -51,6 +51,7 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `health.maxBlockLag` | 落后池内最大高度多少块算掉队 | 5 |
 | `health.failureThreshold` | 连续失败多少次摘除 | 3 |
 | `health.maxRetries` | 单请求最多尝试几个上游 | 2 |
+| `health.retryBaseDelayMs` / `retryMaxDelayMs` | 重试指数退避：`base * 2^(n-1)`，封顶 max | 100 / 1000 |
 | `cache.backend` | `memory` 或 `redis` | `memory` |
 | `cache.shortTtlMs` | 链头相关数据 TTL（dynamicTtl 开启时为上限/回退值） | 2000 |
 | `cache.dynamicTtl` | 按观测出块间隔动态调整短 TTL（间隔/4，钳制在 `[minTtlMs, shortTtlMs]`） | true |

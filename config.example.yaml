@@ -22,6 +22,8 @@ health:
   maxBlockLag: 5            # 落后池内最大高度超过此值则摘除
   failureThreshold: 3       # 连续失败次数达到此值则摘除
   maxRetries: 2             # 单请求最多尝试的上游数
+  retryBaseDelayMs: 100     # 重试退避基数：第 n 次重试延迟 base * 2^(n-1)
+  retryMaxDelayMs: 1000     # 重试退避上限
 
 security:
   # 直接拒绝的 RPC 命名空间（公网入口加固）
