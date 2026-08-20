@@ -125,11 +125,13 @@ export class UpstreamPool {
   /** Poll one upstream: eth_syncing + eth_blockNumber + eth_chainId in one batch. */
   async poll(u: Upstream): Promise<void> {
     try {
+      const startedAt = Date.now();
       const body = await u.call([
         { jsonrpc: "2.0", id: 1, method: "eth_syncing", params: [] },
         { jsonrpc: "2.0", id: 2, method: "eth_blockNumber", params: [] },
         { jsonrpc: "2.0", id: 3, method: "eth_chainId", params: [] },
       ]);
+      u.recordLatency(Date.now() - startedAt);
       const responses = Array.isArray(body) ? body : [body];
       const byId = new Map<number, JsonRpcResponse>();
       for (const r of responses) {

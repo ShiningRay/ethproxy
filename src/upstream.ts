@@ -12,6 +12,8 @@ export interface UpstreamStatus {
   chainId: number | null;
   /** null = not probed yet, true/false = last WS probe result. */
   wsHealthy: boolean | null;
+  /** Rolling average RTT of the health-poll batch, ms; null before first poll. */
+  latencyMs: number | null;
   consecutiveFailures: number;
 }
 
@@ -45,6 +47,8 @@ export class Upstream {
   chainId: number | null = null;
   wsHealthy: boolean | null = null;
   consecutiveFailures = 0;
+  /** Recent poll round-trip times, ms (rolling window). */
+  private latencySamples: number[] = [];
 
   constructor(
     public readonly config: UpstreamConfig,
@@ -53,6 +57,19 @@ export class Upstream {
 
   get name(): string {
     return this.config.name;
+  }
+
+  /** Record one health-poll round-trip time. */
+  recordLatency(ms: number): void {
+    this.latencySamples.push(ms);
+    if (this.latencySamples.length > 5) this.latencySamples.shift();
+  }
+
+  /** Rolling average poll RTT in ms; null before the first successful poll. */
+  get latencyMs(): number | null {
+    if (this.latencySamples.length === 0) return null;
+    const sum = this.latencySamples.reduce((a, b) => a + b, 0);
+    return Math.round(sum / this.latencySamples.length);
   }
 
   /**
@@ -105,6 +122,7 @@ export class Upstream {
       blockNumber: this.blockNumber,
       chainId: this.chainId,
       wsHealthy: this.wsHealthy,
+      latencyMs: this.latencyMs,
       consecutiveFailures: this.consecutiveFailures,
     };
   }

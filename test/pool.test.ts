@@ -96,6 +96,15 @@ describe("UpstreamPool", () => {
     expect(pool.select(1)[0]?.name).toBe("a");
   });
 
+  it("estimates upstream latency from the poll round-trip time", async () => {
+    const node = await startMockNode({});
+    const pool = new UpstreamPool([{ name: "a", url: node.url, weight: 1 }], health);
+    await pool.pollAll();
+    const status = pool.status().upstreams[0]!;
+    expect(typeof status.latencyMs).toBe("number");
+    expect(status.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
   it("excludes nodes that are still syncing", async () => {
     const node = await startMockNode({ syncing: true });
     const pool = new UpstreamPool([{ name: "a", url: node.url, weight: 1 }], health);
