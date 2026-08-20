@@ -1,4 +1,4 @@
-import { cacheKey, ResponseCache } from "./cache/index.js";
+import { cacheKey, ResponseCache, type CacheStats } from "./cache/index.js";
 import { requestPolicy, responseTtl, type CacheRuleContext } from "./cache-rules.js";
 import type { Config } from "./config.js";
 import type { UpstreamPool } from "./pool.js";
@@ -40,6 +40,10 @@ export class ProxyHandler {
       return this.handleBatch(body);
     }
     return this.handleSingle(body);
+  }
+
+  cacheStats(): CacheStats {
+    return this.cache.stats();
   }
 
   private ruleCtx(): CacheRuleContext {

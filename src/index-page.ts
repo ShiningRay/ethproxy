@@ -56,6 +56,12 @@ export function renderIndexPage(meta: IndexPageMeta): string {
     <div class="card"><div class="label">Healthy Upstreams</div><div class="value" id="healthy">–</div></div>
     <div class="card"><div class="label">Cache Backend</div><div class="value">${meta.cacheBackend}</div></div>
   </div>
+  <div class="cards">
+    <div class="card"><div class="label">Cache Hit Rate</div><div class="value" id="hitRate">–</div></div>
+    <div class="card"><div class="label">Cache Hits</div><div class="value ok" id="hits">–</div></div>
+    <div class="card"><div class="label">Cache Misses</div><div class="value" id="misses">–</div></div>
+    <div class="card"><div class="label">Cache Stores</div><div class="value" id="sets">–</div></div>
+  </div>
   <table>
     <thead><tr>
       <th>Upstream</th><th>Status</th><th>Block</th><th>Chain ID</th><th>Syncing</th><th>Failures</th>
@@ -80,6 +86,12 @@ async function refresh() {
       s.chainHead === null ? "–" : s.chainHead.toLocaleString();
     const healthy = s.upstreams.filter(u => u.healthy && !u.syncing).length;
     document.getElementById("healthy").textContent = healthy + " / " + s.upstreams.length;
+    if (s.cache) {
+      document.getElementById("hitRate").textContent = (s.cache.hitRate * 100).toFixed(1) + "%";
+      document.getElementById("hits").textContent = s.cache.hits.toLocaleString();
+      document.getElementById("misses").textContent = s.cache.misses.toLocaleString();
+      document.getElementById("sets").textContent = s.cache.sets.toLocaleString();
+    }
     document.getElementById("upstreams").innerHTML = s.upstreams.map(u => {
       const ok = u.healthy && !u.syncing;
       return "<tr><td>" + u.name + ' <span class="muted">' + u.url + "</span></td>" +

@@ -271,4 +271,25 @@ describe("server endpoints", () => {
 
     await app.close();
   });
+
+  it("reports cache statistics on /status", async () => {
+    const node = await startMockNode(1000);
+    const { config, pool, proxy } = await makeProxy([node]);
+    const app = await buildServer(proxy, pool, config);
+
+    const req = { jsonrpc: "2.0" as const, id: 1, method: "eth_blockNumber", params: [] };
+    await proxy.handle(req); // miss + store
+    await proxy.handle(req); // hit
+
+    const status = await app.inject({ method: "GET", url: "/status" });
+    const body = status.json() as {
+      cache: { hits: number; misses: number; sets: number; hitRate: number };
+    };
+    expect(body.cache.hits).toBe(1);
+    expect(body.cache.misses).toBe(1);
+    expect(body.cache.sets).toBe(1);
+    expect(body.cache.hitRate).toBe(0.5);
+
+    await app.close();
+  });
 });

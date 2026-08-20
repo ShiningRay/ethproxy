@@ -45,7 +45,10 @@ export async function buildServer(
     return reply.code(503).send({ status: "no healthy upstream" });
   });
 
-  app.get("/status", async () => pool.status());
+  app.get("/status", async () => ({
+    ...pool.status(),
+    cache: proxy.cacheStats(),
+  }));
 
   return app;
 }

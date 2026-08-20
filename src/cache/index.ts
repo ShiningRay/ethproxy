@@ -33,11 +33,25 @@ export interface LoggerLike {
   warn: (msg: string, err?: unknown) => void;
 }
 
+export interface CacheStats {
+  hits: number;
+  misses: number;
+  sets: number;
+  errors: number;
+  hitRate: number;
+}
+
 /**
  * Wraps a backend so storage failures degrade to cache misses instead of
  * breaking proxied requests (e.g. Redis temporarily unreachable).
+ * Also keeps simple hit/miss counters for observability.
  */
 export class ResponseCache {
+  private hits = 0;
+  private misses = 0;
+  private sets = 0;
+  private errors = 0;
+
   constructor(
     private readonly backend: CacheBackend,
     private readonly logger?: LoggerLike,
@@ -45,8 +59,16 @@ export class ResponseCache {
 
   async get(key: string): Promise<string | null> {
     try {
-      return await this.backend.get(key);
+      const value = await this.backend.get(key);
+      if (value === null) {
+        this.misses += 1;
+      } else {
+        this.hits += 1;
+      }
+      return value;
     } catch (err) {
+      this.errors += 1;
+      this.misses += 1;
       this.logger?.warn("cache get failed, treating as miss", err);
       return null;
     }
@@ -55,9 +77,22 @@ export class ResponseCache {
   async set(key: string, value: string, ttlMs: number | null): Promise<void> {
     try {
       await this.backend.set(key, value, ttlMs);
+      this.sets += 1;
     } catch (err) {
+      this.errors += 1;
       this.logger?.warn("cache set failed, entry skipped", err);
     }
+  }
+
+  stats(): CacheStats {
+    const lookups = this.hits + this.misses;
+    return {
+      hits: this.hits,
+      misses: this.misses,
+      sets: this.sets,
+      errors: this.errors,
+      hitRate: lookups === 0 ? 0 : this.hits / lookups,
+    };
   }
 
   async close(): Promise<void> {
