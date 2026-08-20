@@ -42,6 +42,12 @@ const configSchema = z.object({
     })
     .default({ host: "0.0.0.0", port: 8545 }),
   upstreams: z.array(upstreamSchema).min(1),
+  /**
+   * Expected chain id (e.g. 1 for mainnet). When set, upstreams reporting a
+   * different eth_chainId are excluded. When unset, the pool adopts the
+   * majority chain id among responsive upstreams.
+   */
+  chainId: z.number().int().positive().optional(),
   health: healthSchema.default({}),
   cache: cacheSchema.default({}),
 });

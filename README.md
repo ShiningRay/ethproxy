@@ -5,7 +5,8 @@ Ethereum JSON-RPC 反向代理：多上游负载均衡与故障转移、同步�
 ## 特性
 
 - **多上游**：加权 round-robin；传输层失败自动切换到下一个健康节点（`eth_sendRawTransaction` 等有副作用的方法不重试）
-- **健康与同步检查**：后台主动轮询 `eth_syncing` + `eth_blockNumber`；同步中、连续失败超过阈值、或落后池内最大高度超过 `maxBlockLag` 的节点会被摘除，恢复后自动重新入池
+- **健康与同步检查**：后台主动轮询 `eth_syncing` + `eth_blockNumber` + `eth_chainId`；同步中、连续失败超过阈值、或落后池内最大高度超过 `maxBlockLag` 的节点会被摘除，恢复后自动重新入池
+- **链一致性保护**：配置 `chainId` 后，报告其他链 ID 的节点直接摘除，防止误配不同链的上游；未配置时自动采用多数节点的 chainId 作为基准
 - **分级缓存**（不是无脑缓存）：
   - 永久缓存：按 hash 定位的不可变数据（区块、交易、已打包的收据）、最终确认的区块号查询（区块号 ≤ 链头 − `finalityDepth`）、链常量（`eth_chainId` 等，1h TTL）
   - 短 TTL（默认 2s）：`eth_blockNumber`、`eth_gasPrice`、带 `latest`/`safe`/`finalized` 标签的状态查询等链头相关数据
@@ -33,6 +34,7 @@ npm run build && npm start -- config.yaml
 | 配置 | 说明 | 默认 |
 |---|---|---|
 | `upstreams[].url` / `weight` | 上游节点地址与权重 | — |
+| `chainId` | 期望的链 ID（如 1 = 主网）；不配则取多数节点为准 | 自动检测 |
 | `health.pollIntervalMs` | 健康轮询间隔 | 5000 |
 | `health.maxBlockLag` | 落后池内最大高度多少块算掉队 | 5 |
 | `health.failureThreshold` | 连续失败多少次摘除 | 3 |

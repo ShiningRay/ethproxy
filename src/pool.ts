@@ -17,6 +17,7 @@ export class UpstreamPool {
     upstreamConfigs: UpstreamConfig[],
     private readonly health: HealthConfig,
     private readonly logger?: PoolLogger,
+    private readonly expectedChainId?: number,
   ) {
     this.upstreams = upstreamConfigs.map(
       (c) => new Upstream(c, health.requestTimeoutMs),
@@ -32,6 +33,30 @@ export class UpstreamPool {
       }
     }
     return max;
+  }
+
+  /**
+   * The pool's reference chain id: the configured one when set, otherwise
+   * the majority chain id among upstreams that have reported one.
+   * Null when no upstream has reported a chain id yet.
+   */
+  get chainId(): number | null {
+    if (this.expectedChainId !== undefined) return this.expectedChainId;
+    const counts = new Map<number, number>();
+    for (const u of this.upstreams) {
+      if (u.chainId !== null) {
+        counts.set(u.chainId, (counts.get(u.chainId) ?? 0) + 1);
+      }
+    }
+    let best: number | null = null;
+    let bestCount = 0;
+    for (const [id, count] of counts) {
+      if (count > bestCount) {
+        best = id;
+        bestCount = count;
+      }
+    }
+    return best;
   }
 
   start(): void {
@@ -56,12 +81,13 @@ export class UpstreamPool {
     this.timers = [];
   }
 
-  /** Poll one upstream: eth_syncing + eth_blockNumber in a single batch. */
+  /** Poll one upstream: eth_syncing + eth_blockNumber + eth_chainId in one batch. */
   async poll(u: Upstream): Promise<void> {
     try {
       const body = await u.call([
         { jsonrpc: "2.0", id: 1, method: "eth_syncing", params: [] },
         { jsonrpc: "2.0", id: 2, method: "eth_blockNumber", params: [] },
+        { jsonrpc: "2.0", id: 3, method: "eth_chainId", params: [] },
       ]);
       const responses = Array.isArray(body) ? body : [body];
       const byId = new Map<number, JsonRpcResponse>();
@@ -76,6 +102,21 @@ export class UpstreamPool {
       u.syncing = syncingRes.result !== false;
       u.blockNumber = parseQuantity(blockRes.result);
       if (u.blockNumber === null) throw new Error("bad eth_blockNumber");
+
+      // eth_chainId is optional: an old node not supporting it must not fail
+      // the whole poll, but will be excluded while a reference chain is known.
+      const chainRes = byId.get(3);
+      const reportedChainId =
+        chainRes && !chainRes.error ? parseQuantity(chainRes.result) : null;
+      if (reportedChainId !== null && reportedChainId !== u.chainId) {
+        const reference = this.chainId;
+        if (reference !== null && reportedChainId !== reference) {
+          this.logger?.warn(
+            `upstream ${u.name} reports chainId ${reportedChainId}, expected ${reference} — it will be excluded`,
+          );
+        }
+      }
+      u.chainId = reportedChainId;
 
       u.consecutiveFailures = 0;
       if (!u.healthy) {
@@ -99,12 +140,14 @@ export class UpstreamPool {
     }
   }
 
-  /** Healthy, not syncing, and within maxBlockLag of the pool head. */
+  /** Healthy, on the reference chain, not syncing, within maxBlockLag of the pool head. */
   private eligible(): Upstream[] {
     const head = this.chainHead;
+    const chainId = this.chainId;
     return this.upstreams.filter((u) => {
       if (!u.healthy || u.syncing) return false;
       if (head === null || u.blockNumber === null) return false;
+      if (chainId !== null && u.chainId !== chainId) return false;
       return head - u.blockNumber <= this.health.maxBlockLag;
     });
   }
@@ -136,9 +179,14 @@ export class UpstreamPool {
     return picks;
   }
 
-  status(): { chainHead: number | null; upstreams: UpstreamStatus[] } {
+  status(): {
+    chainHead: number | null;
+    chainId: number | null;
+    upstreams: UpstreamStatus[];
+  } {
     return {
       chainHead: this.chainHead,
+      chainId: this.chainId,
       upstreams: this.upstreams.map((u) => u.status()),
     };
   }

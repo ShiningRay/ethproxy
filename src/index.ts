@@ -8,7 +8,12 @@ async function main(): Promise<void> {
   const configPath = process.argv[2] ?? "config.yaml";
   const config = loadConfig(configPath);
 
-  const pool = new UpstreamPool(config.upstreams, config.health, console);
+  const pool = new UpstreamPool(
+    config.upstreams,
+    config.health,
+    console,
+    config.chainId,
+  );
   pool.start();
 
   const cache = new ResponseCache(createCacheBackend(config.cache), console);

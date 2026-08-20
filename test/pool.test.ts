@@ -15,7 +15,12 @@ const health: HealthConfig = {
 interface MockNode {
   url: string;
   close: () => Promise<void>;
-  set: (state: { syncing?: boolean; block?: number; fail?: boolean }) => void;
+  set: (state: {
+    syncing?: boolean;
+    block?: number;
+    fail?: boolean;
+    chainId?: number;
+  }) => void;
 }
 
 const servers: Server[] = [];
@@ -24,8 +29,9 @@ async function startMockNode(initial: {
   syncing?: boolean;
   block?: number;
   fail?: boolean;
+  chainId?: number;
 }): Promise<MockNode> {
-  let state = { syncing: false, block: 100, fail: false, ...initial };
+  let state = { syncing: false, block: 100, fail: false, chainId: 1, ...initial };
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -45,6 +51,9 @@ async function startMockNode(initial: {
         }
         if (c.method === "eth_blockNumber") {
           return { jsonrpc: "2.0", id: c.id, result: `0x${state.block.toString(16)}` };
+        }
+        if (c.method === "eth_chainId") {
+          return { jsonrpc: "2.0", id: c.id, result: `0x${state.chainId.toString(16)}` };
         }
         return { jsonrpc: "2.0", id: c.id, error: { code: -32601, message: "not found" } };
       });
@@ -144,5 +153,49 @@ describe("UpstreamPool", () => {
     }
     expect(counts.get("a")).toBe(20);
     expect(counts.get("b")).toBe(10);
+  });
+
+  it("excludes nodes on a different chain than the configured chainId", async () => {
+    const mainnet = await startMockNode({ chainId: 1 });
+    const bsc = await startMockNode({ chainId: 56 });
+    const pool = new UpstreamPool(
+      [
+        { name: "mainnet", url: mainnet.url, weight: 1 },
+        { name: "bsc", url: bsc.url, weight: 1 },
+      ],
+      health,
+      undefined,
+      1, // expected chainId
+    );
+    await pool.pollAll();
+    expect(pool.chainId).toBe(1);
+    expect(pool.select(10).map((u) => u.name)).toEqual(["mainnet"]);
+  });
+
+  it("adopts the majority chainId when none is configured", async () => {
+    const a = await startMockNode({ chainId: 1 });
+    const b = await startMockNode({ chainId: 1 });
+    const rogue = await startMockNode({ chainId: 56 });
+    const pool = new UpstreamPool(
+      [
+        { name: "a", url: a.url, weight: 1 },
+        { name: "b", url: b.url, weight: 1 },
+        { name: "rogue", url: rogue.url, weight: 1 },
+      ],
+      health,
+    );
+    await pool.pollAll();
+    expect(pool.chainId).toBe(1);
+    expect(new Set(pool.select(10).map((u) => u.name))).toEqual(
+      new Set(["a", "b"]),
+    );
+  });
+
+  it("exposes per-node chainId in status", async () => {
+    const node = await startMockNode({ chainId: 1 });
+    const pool = new UpstreamPool([{ name: "a", url: node.url, weight: 1 }], health);
+    await pool.pollAll();
+    expect(pool.status().chainId).toBe(1);
+    expect(pool.status().upstreams[0]?.chainId).toBe(1);
   });
 });

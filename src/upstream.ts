@@ -9,6 +9,7 @@ export interface UpstreamStatus {
   healthy: boolean;
   syncing: boolean;
   blockNumber: number | null;
+  chainId: number | null;
   consecutiveFailures: number;
 }
 
@@ -28,6 +29,7 @@ export class Upstream {
   healthy = false;
   syncing = false;
   blockNumber: number | null = null;
+  chainId: number | null = null;
   consecutiveFailures = 0;
 
   constructor(
@@ -87,6 +89,7 @@ export class Upstream {
       healthy: this.healthy,
       syncing: this.syncing,
       blockNumber: this.blockNumber,
+      chainId: this.chainId,
       consecutiveFailures: this.consecutiveFailures,
     };
   }

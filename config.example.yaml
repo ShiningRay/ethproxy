@@ -10,6 +10,10 @@ upstreams:
     url: http://127.0.0.1:28545
     weight: 1
 
+# 期望的链 ID（如 1 = 以太坊主网）。配置后，报告其他 chainId 的节点会被摘除；
+# 不配置则自动采用多数节点的 chainId 作为基准。
+# chainId: 1
+
 health:
   pollIntervalMs: 5000      # 健康轮询间隔
   requestTimeoutMs: 10000   # 上游请求超时
