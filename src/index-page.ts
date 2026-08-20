@@ -65,9 +65,9 @@ export function renderIndexPage(meta: IndexPageMeta): string {
   </div>
   <table>
     <thead><tr>
-      <th>Upstream</th><th>Status</th><th>Block</th><th>Chain ID</th><th>Syncing</th><th>Failures</th>
+      <th>Upstream</th><th>Status</th><th>Block</th><th>Chain ID</th><th>Syncing</th><th>WS</th><th>Failures</th>
     </tr></thead>
-    <tbody id="upstreams"><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+    <tbody id="upstreams"><tr><td colspan="7" class="muted">loading…</td></tr></tbody>
   </table>
   <div id="error"></div>
   <footer>
@@ -99,11 +99,15 @@ async function refresh() {
     }
     document.getElementById("upstreams").innerHTML = s.upstreams.map(u => {
       const ok = u.healthy && !u.syncing;
+      const ws = u.wsHealthy === true ? '<td class="ok">● ok</td>'
+        : u.wsHealthy === false ? '<td class="bad">● down</td>'
+        : '<td class="muted">–</td>';
       return "<tr><td>" + u.name + ' <span class="muted">' + u.url + "</span></td>" +
         '<td class="' + (ok ? "ok" : "bad") + '">' + (ok ? "● healthy" : "● down") + "</td>" +
         "<td>" + (u.blockNumber === null ? "–" : u.blockNumber.toLocaleString()) + "</td>" +
         "<td>" + (u.chainId ?? "–") + "</td>" +
         "<td>" + (u.syncing ? "yes" : "no") + "</td>" +
+        ws +
         "<td>" + u.consecutiveFailures + "</td></tr>";
     }).join("");
   } catch (err) {

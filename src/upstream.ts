@@ -10,7 +10,20 @@ export interface UpstreamStatus {
   syncing: boolean;
   blockNumber: number | null;
   chainId: number | null;
+  /** null = not probed yet, true/false = last WS probe result. */
+  wsHealthy: boolean | null;
   consecutiveFailures: number;
+}
+
+/** Derive the WS endpoint from an HTTP(S) URL when wsUrl is not configured. */
+export function deriveWsUrl(httpUrl: string): string {
+  const u = new URL(httpUrl);
+  u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
+  return u.toString();
+}
+
+export function upstreamWsUrl(upstream: Upstream): string {
+  return upstream.config.wsUrl ?? deriveWsUrl(upstream.config.url);
 }
 
 /** Error thrown when the upstream is unreachable at the transport level. */
@@ -30,6 +43,7 @@ export class Upstream {
   syncing = false;
   blockNumber: number | null = null;
   chainId: number | null = null;
+  wsHealthy: boolean | null = null;
   consecutiveFailures = 0;
 
   constructor(
@@ -90,6 +104,7 @@ export class Upstream {
       syncing: this.syncing,
       blockNumber: this.blockNumber,
       chainId: this.chainId,
+      wsHealthy: this.wsHealthy,
       consecutiveFailures: this.consecutiveFailures,
     };
   }

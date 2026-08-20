@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
+import { WebSocketServer } from "ws";
 import { UpstreamPool } from "../src/pool.js";
 import type { HealthConfig } from "../src/config.js";
 
@@ -42,10 +43,15 @@ async function startMockNode(initial: {
         res.writeHead(500).end("boom");
         return;
       }
-      const calls = JSON.parse(body) as {
-        id: number;
-        method: string;
-      }[];
+      // WS probes against the derived wsUrl hit this plain HTTP port with a
+      // GET upgrade request (no body) — don't choke on it.
+      let calls: { id: number; method: string }[];
+      try {
+        calls = JSON.parse(body) as { id: number; method: string }[];
+      } catch {
+        res.writeHead(400).end("bad request");
+        return;
+      }
       const list = Array.isArray(calls) ? calls : [calls];
       const replies = list.map((c) => {
         if (c.method === "eth_syncing") {
@@ -199,5 +205,40 @@ describe("UpstreamPool", () => {
     await pool.pollAll();
     expect(pool.status().chainId).toBe(1);
     expect(pool.status().upstreams[0]?.chainId).toBe(1);
+  });
+
+  it("probes websocket endpoints and selects WS-healthy nodes for forwarding", async () => {
+    const http = await startMockNode({});
+
+    // No wsUrl configured: derived from the HTTP url, which is a plain HTTP
+    // port — the probe fails fast and the node is excluded from selectWs.
+    const noWs = new UpstreamPool([{ name: "a", url: http.url, weight: 1 }], health);
+    await noWs.pollAll();
+    expect(noWs.status().upstreams[0]?.wsHealthy).toBe(false);
+    expect(noWs.selectWs(1)).toEqual([]);
+
+    // With a working wsUrl the node becomes WS-healthy and selectable.
+    const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise<void>((r) => wss.on("listening", r));
+    wss.on("connection", (ws) => {
+      ws.on("message", (data) => {
+        const req = JSON.parse(data.toString()) as { id: number };
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: "0x1" }));
+      });
+    });
+    const wsPort = (wss.address() as AddressInfo).port;
+
+    const withWs = new UpstreamPool(
+      [{ name: "b", url: http.url, wsUrl: `ws://127.0.0.1:${wsPort}`, weight: 1 }],
+      health,
+    );
+    await withWs.pollAll();
+    expect(withWs.status().upstreams[0]?.wsHealthy).toBe(true);
+    expect(withWs.selectWs(1).map((u) => u.name)).toEqual(["b"]);
+
+    // WS endpoint dies -> next poll marks it down again.
+    await new Promise<void>((r) => wss.close(() => r()));
+    await withWs.pollAll();
+    expect(withWs.status().upstreams[0]?.wsHealthy).toBe(false);
   });
 });

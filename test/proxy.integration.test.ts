@@ -36,9 +36,17 @@ async function startMockNode(
         res.writeHead(500).end("boom");
         return;
       }
-      const parsed = JSON.parse(body) as
+      // WS probes against the derived wsUrl arrive here as GET upgrade
+      // requests with no body — reject cleanly instead of hanging.
+      let parsed:
         | { id: number | string; method: string; params?: unknown[] }
         | { id: number | string; method: string; params?: unknown[] }[];
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        res.writeHead(400).end("bad request");
+        return;
+      }
       const respond = () => {
         const list = Array.isArray(parsed) ? parsed : [parsed];
         const replies = list.map((call) => {

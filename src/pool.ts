@@ -1,6 +1,11 @@
 import type { HealthConfig, UpstreamConfig } from "./config.js";
 import { parseQuantity, type JsonRpcResponse } from "./rpc.js";
-import { Upstream, type UpstreamStatus } from "./upstream.js";
+import {
+  Upstream,
+  upstreamWsUrl,
+  type UpstreamStatus,
+} from "./upstream.js";
+import WebSocket from "ws";
 
 export interface PoolLogger {
   info: (msg: string, ...args: unknown[]) => void;
@@ -163,6 +168,7 @@ export class UpstreamPool {
       if (head !== null) this.observeHead(head);
     } catch (err) {
       u.consecutiveFailures += 1;
+      u.wsHealthy = false;
       if (
         u.healthy &&
         u.consecutiveFailures >= this.health.failureThreshold
@@ -175,6 +181,49 @@ export class UpstreamPool {
       if (!u.healthy) {
         this.logger?.warn(`poll of ${u.name} failed`, err);
       }
+      return;
+    }
+
+    await this.probeWs(u);
+  }
+
+  /**
+   * Probe the upstream's WebSocket endpoint: connect and make one
+   * eth_chainId call. Only runs when the HTTP side is healthy; a node with
+   * WS disabled keeps serving HTTP but is excluded from WS forwarding.
+   */
+  private async probeWs(u: Upstream): Promise<void> {
+    const url = upstreamWsUrl(u);
+    const timeoutMs = Math.min(this.health.requestTimeoutMs, 5000);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(url);
+        const timer = setTimeout(() => {
+          ws.terminate();
+          reject(new Error("ws probe timeout"));
+        }, timeoutMs);
+        const done = (err?: Error) => {
+          clearTimeout(timer);
+          ws.close();
+          err ? reject(err) : resolve();
+        };
+        ws.on("open", () => {
+          ws.send(
+            JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }),
+          );
+        });
+        ws.on("message", () => done());
+        ws.on("error", (err) => done(err));
+      });
+      if (u.wsHealthy !== true) {
+        this.logger?.info(`upstream ${u.name} websocket is now available`);
+      }
+      u.wsHealthy = true;
+    } catch (err) {
+      if (u.wsHealthy !== false) {
+        this.logger?.warn(`upstream ${u.name} websocket probe failed`, err);
+      }
+      u.wsHealthy = false;
     }
   }
 
@@ -199,7 +248,21 @@ export class UpstreamPool {
    * distinct upstreams in attempt order (for failover retries).
    */
   select(count = 1): Upstream[] {
-    const candidates = this.eligible();
+    return this.pick(this.eligible(), count);
+  }
+
+  /**
+   * Like select(), but restricted to upstreams whose WebSocket endpoint
+   * responded to the latest probe. Used for WS forwarding.
+   */
+  selectWs(count = 1): Upstream[] {
+    return this.pick(
+      this.eligible().filter((u) => u.wsHealthy === true),
+      count,
+    );
+  }
+
+  private pick(candidates: Upstream[], count: number): Upstream[] {
     if (candidates.length === 0) return [];
     const weighted = candidates.flatMap((u) =>
       Array<Upstream>(u.config.weight).fill(u),

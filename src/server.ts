@@ -32,7 +32,7 @@ export async function buildServer(
     method: "GET",
     url: "/",
     wsHandler: (socket) => {
-      handleWsConnection(socket, pool, app.log);
+      handleWsConnection(socket, pool, proxy, app.log);
     },
     handler: async (_request, reply) => {
       void reply
