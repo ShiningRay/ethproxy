@@ -43,6 +43,19 @@ const cacheSchema = z.object({
     .optional(),
 });
 
+const securitySchema = z.object({
+  /** JSON-RPC namespaces that are rejected outright (public-RPC hardening). */
+  blockedNamespaces: z
+    .array(z.string())
+    .default(["admin", "personal", "debug", "trace", "miner", "txpool"]),
+  /** Max number of elements in a JSON-RPC batch request. */
+  maxBatchSize: z.number().int().positive().default(100),
+  /** Max HTTP request body size in bytes. */
+  maxBodyBytes: z.number().int().positive().default(1048576),
+  /** Max fromBlock..toBlock span allowed for eth_getLogs. */
+  maxLogsRange: z.number().int().positive().default(10000),
+});
+
 const configSchema = z.object({
   listen: z
     .object({
@@ -59,12 +72,14 @@ const configSchema = z.object({
   chainId: z.number().int().positive().optional(),
   health: healthSchema.default({}),
   cache: cacheSchema.default({}),
+  security: securitySchema.default({}),
 });
 
 export type Config = z.infer<typeof configSchema>;
 export type UpstreamConfig = z.infer<typeof upstreamSchema>;
 export type HealthConfig = z.infer<typeof healthSchema>;
 export type CacheConfig = z.infer<typeof cacheSchema>;
+export type SecurityConfig = z.infer<typeof securitySchema>;
 
 export function loadConfig(path: string): Config {
   const raw = readFileSync(path, "utf8");

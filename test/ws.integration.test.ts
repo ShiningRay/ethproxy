@@ -76,6 +76,12 @@ async function makeApp(wsUrl?: string) {
       finalityDepth: 64,
       memory: { maxEntries: 1000 },
     },
+    security: {
+      blockedNamespaces: ["admin", "personal", "debug", "trace", "miner", "txpool"],
+      maxBatchSize: 100,
+      maxBodyBytes: 1048576,
+      maxLogsRange: 10000,
+    },
   };
   const pool = new UpstreamPool(config.upstreams, config.health);
   await pool.pollAll();
@@ -142,6 +148,12 @@ describe("WebSocket forwarding", () => {
         minTtlMs: 200,
         finalityDepth: 64,
         memory: { maxEntries: 1000 },
+      },
+      security: {
+        blockedNamespaces: ["admin", "personal", "debug", "trace", "miner", "txpool"],
+        maxBatchSize: 100,
+        maxBodyBytes: 1048576,
+        maxLogsRange: 10000,
       },
     };
     const pool = new UpstreamPool(config.upstreams, config.health);

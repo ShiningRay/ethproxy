@@ -11,7 +11,10 @@ export async function buildServer(
   pool: UpstreamPool,
   config: Config,
 ): Promise<FastifyInstance> {
-  const app = Fastify({ logger: true });
+  const app = Fastify({
+    logger: true,
+    bodyLimit: config.security.maxBodyBytes,
+  });
 
   // Must be awaited: the plugin's onRoute hook only wraps routes registered
   // after the plugin has loaded.

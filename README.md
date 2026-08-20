@@ -14,6 +14,7 @@ Ethereum JSON-RPC 反向代理：多上游负载均衡与故障转移、同步�
 - **可插拔缓存后端**：内存 LRU（默认）或 Redis；实现 `CacheBackend` 接口即可扩展
 - **批量请求**：数组请求逐项走缓存管线，未命中项按缓存性分流（可缓存项走 single-flight，其余合并为单次批量转发）
 - **Single-flight 防拥堵**：同一缓存键的并发未命中只发一次上游请求，其余请求共享该结果，避免短 TTL 过期瞬间的惊群效应
+- **公网加固**：默认拒绝 `admin_*`/`debug_*`/`personal_*` 等命名空间；限制批量请求大小、请求体大小和 `eth_getLogs` 区块跨度
 - **WebSocket 透传**：客户端 WS 连接固定到一个健康上游，帧双向原样转发；上游断开会关闭客户端连接，由客户端重连后落到健康节点（不做订阅状态管理）
 - **运维端点**：`GET /` 索引页（浏览器访问，实时展示链高与各上游状态）、`GET /healthz`（无健康上游返回 503）、`GET /status`（JSON 状态）
 
@@ -74,6 +75,36 @@ interface CacheBackend {
 ```
 
 缓存后端故障会降级为缓存未命中，不影响代理转发。
+
+## 部署在 Cloudflare 之后（DDoS 防护建议）
+
+ethproxy 自身只承担应用层防护（方法黑名单、请求形状限制、缓存吸收、single-flight）。完整的防护应当分层，外层由 Cloudflare 和基础设施承担：
+
+**Cloudflare 侧（收益最大，优先做）：**
+
+- L3/L4 流量型攻击（SYN flood、UDP 放大等）由 CF 代理模式天然吸收，源站无感
+- 开启 WAF 托管规则、Rate Limiting（如单 IP 每秒 N 请求）、Bot Fight Mode
+- **源站锁定**：安全组/防火墙只对 [Cloudflare 官方 IP 段](https://www.cloudflare.com/ips/) 放行 80/443，防止攻击者绕过 CF 直连源站——不做这一步，CF 的防护形同虚设
+- SSL 模式建议 Full (Strict) + Cloudflare Origin Certificate（拒绝自签名/过期证书的中间人风险）
+
+**nginx / 网关侧：**
+
+- `limit_req_zone` 按 IP 限速、`limit_conn` 限制并发连接
+- WebSocket 升级头映射与长连接超时（本项目部署示例见下文）
+- 代理时透传真实客户端 IP（`X-Forwarded-For` / CF 的 `CF-Connecting-IP`），供后续限流使用
+
+**ethproxy 侧（已实现）：**
+
+- 默认拒绝 `admin_*` / `debug_*` / `personal_*` 等危险命名空间（`debug_traceTransaction` 一个请求就能让节点 CPU 跑满数秒，是典型的应用层攻击武器）
+- 限制批量请求元素数、请求体大小、`eth_getLogs` 区块跨度
+- 分级缓存 + single-flight：热点只读请求基本不打上游
+- 健康检查 + 故障摘除：上游异常时快速失败而不是请求堆积
+
+**部署参考**（本项目生产环境结构）：
+
+```
+客户端 → Cloudflare (WAF/限速/TLS) → nginx (WS 升级/限速) → ethproxy (127.0.0.1:8545) → 上游节点
+```
 
 ## 开发
 

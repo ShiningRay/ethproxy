@@ -23,6 +23,13 @@ health:
   failureThreshold: 3       # 连续失败次数达到此值则摘除
   maxRetries: 2             # 单请求最多尝试的上游数
 
+security:
+  # 直接拒绝的 RPC 命名空间（公网入口加固）
+  blockedNamespaces: [admin, personal, debug, trace, miner, txpool]
+  maxBatchSize: 100         # 单个批量请求最大元素数
+  maxBodyBytes: 1048576     # 请求体大小上限（1MB）
+  maxLogsRange: 10000       # eth_getLogs 最大区块跨度
+
 cache:
   backend: memory           # memory | redis（可扩展其他后端）
   shortTtlMs: 2000          # 链头相关数据的短 TTL（dynamicTtl 开启时作为上限与初始回退值）

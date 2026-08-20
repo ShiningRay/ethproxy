@@ -106,6 +106,12 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
       finalityDepth: 64,
       memory: { maxEntries: 1000 },
     },
+    security: {
+      blockedNamespaces: ["admin", "personal", "debug", "trace", "miner", "txpool"],
+      maxBatchSize: 5,
+      maxBodyBytes: 1048576,
+      maxLogsRange: 100,
+    },
   };
   const pool = new UpstreamPool(config.upstreams, config.health);
   await pool.pollAll();
@@ -262,6 +268,58 @@ describe("ProxyHandler", () => {
     responses.forEach((r, i) => {
       expect(r).toMatchObject({ id: i + 1, result: "0x3e8" });
     });
+  });
+
+  it("rejects blocked methods without touching upstream", async () => {
+    const node = await startMockNode(1000);
+    const { proxy } = await makeProxy([node]);
+
+    const res = await proxy.handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "debug_traceTransaction",
+      params: ["0xtx"],
+    });
+    expect(res).toMatchObject({ id: 1, error: { code: -32601 } });
+    expect(node.hits.get("debug_traceTransaction") ?? 0).toBe(0);
+  });
+
+  it("rejects oversized batches", async () => {
+    const node = await startMockNode(1000);
+    const { proxy } = await makeProxy([node]); // maxBatchSize: 5
+
+    const batch = Array.from({ length: 6 }, (_, i) => ({
+      jsonrpc: "2.0" as const,
+      id: i,
+      method: "eth_blockNumber",
+      params: [],
+    }));
+    const res = await proxy.handle(batch);
+    expect(res).toMatchObject({ error: { code: -32600 } });
+  });
+
+  it("rejects eth_getLogs ranges beyond the limit", async () => {
+    const node = await startMockNode(1000, {
+      eth_getLogs: () => [],
+    });
+    const { proxy } = await makeProxy([node]); // maxLogsRange: 100, chainHead: 1000
+
+    const tooWide = await proxy.handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_getLogs",
+      params: [{ fromBlock: "0x0", toBlock: "latest" }],
+    });
+    expect(tooWide).toMatchObject({ id: 1, error: { code: -32602 } });
+    expect(node.hits.get("eth_getLogs") ?? 0).toBe(0);
+
+    const fine = await proxy.handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "eth_getLogs",
+      params: [{ fromBlock: "0x3e0", toBlock: "0x3e8" }],
+    });
+    expect(fine).toMatchObject({ id: 2, result: [] });
   });
 });
 

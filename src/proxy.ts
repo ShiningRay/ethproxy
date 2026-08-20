@@ -8,6 +8,7 @@ import {
   type JsonRpcRequest,
   type JsonRpcResponse,
 } from "./rpc.js";
+import { isMethodBlocked, logsRangeViolation } from "./security.js";
 import { UpstreamTransportError } from "./upstream.js";
 
 export interface ProxyLogger {
@@ -61,6 +62,13 @@ export class ProxyHandler {
       if (body.length === 0) {
         return errorResponse(null, -32600, "Invalid Request: empty batch");
       }
+      if (body.length > this.config.security.maxBatchSize) {
+        return errorResponse(
+          null,
+          -32600,
+          `batch size ${body.length} exceeds limit ${this.config.security.maxBatchSize}`,
+        );
+      }
       return this.handleBatch(body);
     }
     return this.handleSingle(body);
@@ -68,6 +76,29 @@ export class ProxyHandler {
 
   cacheStats(): CacheStats {
     return this.cache.stats();
+  }
+
+  /**
+   * Reject blocked methods and oversized eth_getLogs ranges before any
+   * cache or upstream work. Returns an error response, or null when the
+   * request may proceed.
+   */
+  private guardRequest(request: JsonRpcRequest): JsonRpcResponse | null {
+    if (isMethodBlocked(request.method, this.config.security)) {
+      return errorResponse(request.id, -32601, "method not allowed");
+    }
+    if (request.method === "eth_getLogs") {
+      const params = Array.isArray(request.params) ? request.params : [];
+      const violation = logsRangeViolation(
+        params,
+        this.pool.chainHead,
+        this.config.security,
+      );
+      if (violation !== null) {
+        return errorResponse(request.id, -32602, violation);
+      }
+    }
+    return null;
   }
 
   private ruleCtx(): CacheRuleContext {
@@ -95,6 +126,11 @@ export class ProxyHandler {
           return;
         }
         const request = item;
+        const rejection = this.guardRequest(request);
+        if (rejection !== null) {
+          results[index] = rejection;
+          return;
+        }
         const params = Array.isArray(request.params) ? request.params : [];
         const policy = requestPolicy(request.method, params, ctx);
         if (!policy.cacheable) {
@@ -147,6 +183,8 @@ export class ProxyHandler {
       return errorResponse(null, -32600, "Invalid Request");
     }
     const request = body;
+    const rejection = this.guardRequest(request);
+    if (rejection !== null) return rejection;
     const params = Array.isArray(request.params) ? request.params : [];
     const ctx = this.ruleCtx();
     const policy = requestPolicy(request.method, params, ctx);
