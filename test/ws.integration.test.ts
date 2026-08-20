@@ -82,7 +82,7 @@ async function makeApp(wsUrl?: string) {
     new ResponseCache(createCacheBackend(config.cache)),
     config,
   );
-  const app = await buildServer(proxy, pool);
+  const app = await buildServer(proxy, pool, config);
   await app.listen({ host: "127.0.0.1", port: 0 });
   cleanups.push(() => app.close());
   const { port } = app.server.address() as AddressInfo;
@@ -147,7 +147,7 @@ describe("WebSocket forwarding", () => {
       new ResponseCache(createCacheBackend(config.cache)),
       config,
     );
-    const app = await buildServer(proxy, pool);
+    const app = await buildServer(proxy, pool, config);
     await app.listen({ host: "127.0.0.1", port: 0 });
     cleanups.push(() => app.close());
     const { port } = app.server.address() as AddressInfo;

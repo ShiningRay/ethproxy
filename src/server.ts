@@ -1,5 +1,7 @@
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
+import type { Config } from "./config.js";
+import { renderIndexPage } from "./index-page.js";
 import type { UpstreamPool } from "./pool.js";
 import type { ProxyHandler } from "./proxy.js";
 import { handleWsConnection } from "./ws-proxy.js";
@@ -7,6 +9,7 @@ import { handleWsConnection } from "./ws-proxy.js";
 export async function buildServer(
   proxy: ProxyHandler,
   pool: UpstreamPool,
+  config: Config,
 ): Promise<FastifyInstance> {
   const app = Fastify({ logger: true });
 
@@ -20,9 +23,19 @@ export async function buildServer(
     return result;
   });
 
-  // WebSocket JSON-RPC: plain forwarding to one healthy upstream.
-  app.get("/", { websocket: true }, (socket) => {
-    handleWsConnection(socket, pool, app.log);
+  // GET / serves the landing page for browsers; WebSocket upgrades on the
+  // same path are forwarded to a healthy upstream.
+  app.route({
+    method: "GET",
+    url: "/",
+    wsHandler: (socket) => {
+      handleWsConnection(socket, pool, app.log);
+    },
+    handler: async (_request, reply) => {
+      void reply
+        .header("content-type", "text/html; charset=utf-8")
+        .send(renderIndexPage({ cacheBackend: config.cache.backend }));
+    },
   });
 
   app.get("/healthz", async (_request, reply) => {

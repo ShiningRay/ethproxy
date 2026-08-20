@@ -235,8 +235,8 @@ describe("ProxyHandler", () => {
 describe("server endpoints", () => {
   it("exposes /healthz and /status", async () => {
     const node = await startMockNode(1000);
-    const { pool, proxy } = await makeProxy([node]);
-    const app = await buildServer(proxy, pool);
+    const { config, pool, proxy } = await makeProxy([node]);
+    const app = await buildServer(proxy, pool, config);
 
     const health = await app.inject({ method: "GET", url: "/healthz" });
     expect(health.statusCode).toBe(200);
@@ -254,6 +254,20 @@ describe("server endpoints", () => {
     await pool.pollAll();
     const down = await app.inject({ method: "GET", url: "/healthz" });
     expect(down.statusCode).toBe(503);
+
+    await app.close();
+  });
+
+  it("serves an HTML index page on GET /", async () => {
+    const node = await startMockNode(1000);
+    const { config, pool, proxy } = await makeProxy([node]);
+    const app = await buildServer(proxy, pool, config);
+
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.body).toContain("ethproxy");
+    expect(res.body).toContain("memory"); // cache backend
 
     await app.close();
   });
