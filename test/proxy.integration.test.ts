@@ -10,6 +10,8 @@ import { buildServer } from "../src/server.js";
 interface MockNode {
   url: string;
   hits: Map<string, number>;
+  /** Last params seen per method, for asserting request translation. */
+  lastParams: Map<string, unknown[]>;
   setFail: (fail: boolean) => void;
 }
 
@@ -28,6 +30,7 @@ async function startMockNode(
 ): Promise<MockNode> {
   let fail = false;
   const hits = new Map<string, number>();
+  const lastParams = new Map<string, unknown[]>();
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -51,6 +54,7 @@ async function startMockNode(
         const list = Array.isArray(parsed) ? parsed : [parsed];
         const replies = list.map((call) => {
           hits.set(call.method, (hits.get(call.method) ?? 0) + 1);
+          lastParams.set(call.method, call.params ?? []);
           if (call.method === "eth_syncing") {
             return { jsonrpc: "2.0", id: call.id, result: false };
           }
@@ -84,6 +88,7 @@ async function startMockNode(
   return {
     url: `http://127.0.0.1:${port}`,
     hits,
+    lastParams,
     setFail: (f) => {
       fail = f;
     },
@@ -134,18 +139,81 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
 }
 
 describe("ProxyHandler", () => {
-  it("serves repeated eth_blockNumber from cache", async () => {
+  it("answers eth_blockNumber from the local chain head without upstream calls", async () => {
     const node = await startMockNode(1000);
     const { proxy } = await makeProxy([node]);
+    const baseline = node.hits.get("eth_blockNumber") ?? 0; // from pollAll
 
     const req = { jsonrpc: "2.0" as const, id: 1, method: "eth_blockNumber", params: [] };
     const first = await proxy.handle(req);
     const second = await proxy.handle(req);
     expect(first).toMatchObject({ result: "0x3e8" });
     expect(second).toMatchObject({ result: "0x3e8" });
-    // pollAll() hits eth_blockNumber once; the first proxy call forwards it,
-    // the second is served from cache.
-    expect(node.hits.get("eth_blockNumber")).toBe(2);
+    // answered locally: no upstream call beyond the health poll
+    expect(node.hits.get("eth_blockNumber")).toBe(baseline);
+  });
+
+  it("translates explicit and implicit latest tags to the pool head", async () => {
+    const node = await startMockNode(1000, {
+      eth_getBalance: () => "0x1",
+      eth_call: () => "0x",
+    });
+    const { proxy } = await makeProxy([node]);
+
+    await proxy.handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_getBalance",
+      params: ["0xaddr", "latest"],
+    });
+    expect(node.lastParams.get("eth_getBalance")).toEqual(["0xaddr", "0x3e8"]);
+
+    // implicit latest: the tag param is appended after translation
+    await proxy.handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "eth_call",
+      params: [{ to: "0x1", data: "0x" }],
+    });
+    expect(node.lastParams.get("eth_call")).toEqual([{ to: "0x1", data: "0x" }, "0x3e8"]);
+  });
+
+  it("routes translated requests only to upstreams that have the block", async () => {
+    const tall = await startMockNode(1000, { eth_getBalance: () => "0x1" });
+    const short = await startMockNode(998, { eth_getBalance: () => "0x2" }); // lag 2 <= 5
+    const { proxy } = await makeProxy([tall, short]);
+
+    const res = await proxy.handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_getBalance",
+      params: ["0xaddr", "latest"],
+    });
+    // head is 1000; only the node at 1000 may serve it
+    expect(res).toMatchObject({ result: "0x1" });
+    expect(tall.hits.get("eth_getBalance")).toBe(1);
+    expect(short.hits.get("eth_getBalance") ?? 0).toBe(0);
+  });
+
+  it("falls back to the untranslated request when no upstream has the head block", async () => {
+    const tall = await startMockNode(1000, { eth_getBalance: () => "0x1" });
+    const short = await startMockNode(998, { eth_getBalance: () => "0x2" });
+    const { pool, proxy } = await makeProxy([tall, short]);
+
+    // tall dies; its stale height (1000) remains the pool head, and no
+    // healthy node has block 1000 -> downgrade to the original "latest".
+    tall.setFail(true);
+    await pool.pollAll();
+    await pool.pollAll();
+
+    const res = await proxy.handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_getBalance",
+      params: ["0xaddr", "latest"],
+    });
+    expect(res).toMatchObject({ result: "0x2" });
+    expect(short.lastParams.get("eth_getBalance")).toEqual(["0xaddr", "latest"]);
   });
 
   it("permanently caches mined transaction receipts", async () => {
@@ -281,26 +349,28 @@ describe("ProxyHandler", () => {
   });
 
   it("coalesces concurrent identical requests (single-flight)", async () => {
-    const node = await startMockNode(1000, {}, 20); // 20ms latency ensures overlap
+    const node = await startMockNode(1000, { eth_getBalance: () => "0x1" }, 20); // 20ms latency ensures overlap
     const { proxy } = await makeProxy([node]);
-    const baseline = node.hits.get("eth_blockNumber") ?? 0;
+    const baseline = node.hits.get("eth_getBalance") ?? 0;
 
     const makeReq = (id: number) => ({
       jsonrpc: "2.0" as const,
       id,
-      method: "eth_blockNumber",
-      params: [],
+      method: "eth_getBalance",
+      params: ["0xaaa", "latest"],
     });
     const responses = await Promise.all(
       Array.from({ length: 10 }, (_, i) => proxy.handle(makeReq(i + 1))),
     );
 
     // 10 concurrent misses -> exactly 1 upstream call
-    expect(node.hits.get("eth_blockNumber")).toBe(baseline + 1);
+    expect(node.hits.get("eth_getBalance")).toBe(baseline + 1);
     // every follower still gets its own id and the shared result
     responses.forEach((r, i) => {
-      expect(r).toMatchObject({ id: i + 1, result: "0x3e8" });
+      expect(r).toMatchObject({ id: i + 1, result: "0x1" });
     });
+    // the upstream saw the translated tag
+    expect(node.lastParams.get("eth_getBalance")).toEqual(["0xaaa", "0x3e8"]);
   });
 
   it("rejects blocked methods without touching upstream", async () => {
@@ -397,11 +467,11 @@ describe("server endpoints", () => {
   });
 
   it("reports cache statistics on /status", async () => {
-    const node = await startMockNode(1000);
+    const node = await startMockNode(1000, { eth_gasPrice: () => "0x3b9aca00" });
     const { config, pool, proxy } = await makeProxy([node]);
     const app = await buildServer(proxy, pool, config);
 
-    const req = { jsonrpc: "2.0" as const, id: 1, method: "eth_blockNumber", params: [] };
+    const req = { jsonrpc: "2.0" as const, id: 1, method: "eth_gasPrice", params: [] };
     await proxy.handle(req); // miss + store
     await proxy.handle(req); // hit
 

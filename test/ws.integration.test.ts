@@ -72,6 +72,7 @@ async function startHttpMock(
         if (c.method === "eth_syncing") return { jsonrpc: "2.0", id: c.id, result: false };
         if (c.method === "eth_blockNumber") return { jsonrpc: "2.0", id: c.id, result: `0x${block.toString(16)}` };
         if (c.method === "eth_chainId") return { jsonrpc: "2.0", id: c.id, result: "0x1" };
+        if (c.method === "eth_getBalance") return { jsonrpc: "2.0", id: c.id, result: "0x1" };
         return { jsonrpc: "2.0", id: c.id, error: { code: -32601, message: "nf" } };
       });
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(replies));
@@ -163,22 +164,22 @@ describe("WebSocket handling", () => {
     const http = await startHttpMock(1000);
     const ws = await startWsMock();
     const { port } = await makeApp({ url: http.url, wsUrl: ws.url });
-    const baseline = http.hits.get("eth_blockNumber") ?? 0;
+    const baseline = http.hits.get("eth_getBalance") ?? 0;
     // the pool's WS probe during pollAll() already talked to the mock
     ws.received.length = 0;
 
     const client = new WebSocket(`ws://127.0.0.1:${port}/`);
     const responses = collect(client, 2);
     client.on("open", () => {
-      client.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }));
-      client.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_blockNumber", params: [] }));
+      client.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: ["0xaaa", "latest"] }));
+      client.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_getBalance", params: ["0xaaa", "latest"] }));
     });
     const [first, second] = await responses;
 
-    expect(first).toMatchObject({ id: 1, result: "0x3e8" });
-    expect(second).toMatchObject({ id: 2, result: "0x3e8" });
-    // second call was served from cache: only one extra upstream HTTP call
-    expect(http.hits.get("eth_blockNumber")).toBe(baseline + 1);
+    expect(first).toMatchObject({ id: 1, result: "0x1" });
+    expect(second).toMatchObject({ id: 2, result: "0x1" });
+    // second call was served from cache (or single-flight): one upstream call
+    expect(http.hits.get("eth_getBalance")).toBe(baseline + 1);
     // nothing was forwarded to the WS endpoint
     expect(ws.received).toHaveLength(0);
     client.close();

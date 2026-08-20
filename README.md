@@ -9,8 +9,9 @@ Ethereum JSON-RPC 反向代理：多上游负载均衡与故障转移、同步�
 - **链一致性保护**：配置 `chainId` 后，报告其他链 ID 的节点直接摘除，防止误配不同链的上游；未配置时自动采用多数节点的 chainId 作为基准
 - **分级缓存**（不是无脑缓存）：
   - 永久缓存：按 hash 定位的不可变数据（区块、交易、已打包的收据）、最终确认的区块号查询（区块号 ≤ 链头 − `finalityDepth`）、链常量（`eth_chainId` 等，1h TTL）
-  - 短 TTL（默认 2s）：`eth_blockNumber`、`eth_gasPrice`、带 `latest`/`safe`/`finalized` 标签的状态查询等链头相关数据
+  - 短 TTL（默认 2s）：`eth_gasPrice` 等链头相关数据
   - 不缓存：`eth_sendRawTransaction` 等写方法、`pending` 标签、未来区块、`admin_*`/`debug_*` 等管理命名空间、未识别方法（fail-safe）
+- **latest 一致性**：`latest` 标签（含参数缺省的隐含 latest）在进入缓存/转发前翻译为本地观测的池链高 H——同一轮询窗口内所有客户端读到一致的数据，缓存键稳定为 `(method, H)`；翻译后的请求只路由到 `blockNumber >= H` 的节点，无节点满足时回退为原始 `latest` 请求且结果不缓存；`eth_blockNumber` 直接由本地链高应答，不打上游
 - **可插拔缓存后端**：内存 LRU（默认）或 Redis；实现 `CacheBackend` 接口即可扩展
 - **批量请求**：数组请求逐项走缓存管线，未命中项按缓存性分流（可缓存项走 single-flight，其余合并为单次批量转发）
 - **Single-flight 防拥堵**：同一缓存键的并发未命中只发一次上游请求，其余请求共享该结果，避免短 TTL 过期瞬间的惊群效应

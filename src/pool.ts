@@ -248,9 +248,16 @@ export class UpstreamPool {
   /**
    * Weighted round-robin over eligible upstreams. Returns up to `count`
    * distinct upstreams in attempt order (for failover retries).
+   * When minBlock is set, only upstreams that have that block are picked.
    */
-  select(count = 1): Upstream[] {
-    return this.pick(this.eligible(), count);
+  select(count = 1, minBlock?: number): Upstream[] {
+    let candidates = this.eligible();
+    if (minBlock !== undefined) {
+      candidates = candidates.filter(
+        (u) => u.blockNumber !== null && u.blockNumber >= minBlock,
+      );
+    }
+    return this.pick(candidates, count);
   }
 
   /**

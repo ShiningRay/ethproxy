@@ -9,6 +9,7 @@ import {
   type JsonRpcResponse,
 } from "./rpc.js";
 import { isMethodBlocked, logsRangeViolation } from "./security.js";
+import { translateLatest } from "./translate.js";
 import { UpstreamTransportError } from "./upstream.js";
 
 export interface ProxyLogger {
@@ -131,28 +132,49 @@ export class ProxyHandler {
     };
   }
 
+  /** Answer eth_blockNumber from the locally observed pool head. */
+  private localBlockNumber(id: JsonRpcRequest["id"]): JsonRpcResponse | null {
+    const head = this.pool.chainHead;
+    if (head === null) return null;
+    return { jsonrpc: "2.0", id, result: `0x${head.toString(16)}` };
+  }
+
   private async handleBatch(body: unknown[]): Promise<JsonRpcResponse[]> {
     const ctx = this.ruleCtx();
     const results: (JsonRpcResponse | null)[] = new Array(body.length).fill(null);
-    const misses: { index: number; request: JsonRpcRequest; key: string | null }[] = [];
+    const misses: {
+      index: number;
+      request: JsonRpcRequest;
+      original: JsonRpcRequest;
+      minBlock: number | null;
+      key: string | null;
+    }[] = [];
 
-    // 1. Validate and serve from cache where possible.
+    // 1. Validate, translate "latest", and serve from cache where possible.
     await Promise.all(
       body.map(async (item, index) => {
         if (!isJsonRpcRequest(item)) {
           results[index] = errorResponse(null, -32600, "Invalid Request");
           return;
         }
-        const request = item;
-        const rejection = this.guardRequest(request);
+        const original = item;
+        const rejection = this.guardRequest(original);
         if (rejection !== null) {
           results[index] = rejection;
           return;
         }
+        if (original.method === "eth_blockNumber") {
+          const local = this.localBlockNumber(original.id);
+          if (local !== null) {
+            results[index] = local;
+            return;
+          }
+        }
+        const { request, minBlock } = translateLatest(original, this.pool.chainHead);
         const params = Array.isArray(request.params) ? request.params : [];
         const policy = requestPolicy(request.method, params, ctx);
         if (!policy.cacheable) {
-          misses.push({ index, request, key: null });
+          misses.push({ index, request, original, minBlock, key: null });
           return;
         }
         const key = cacheKey(request.method, params);
@@ -165,7 +187,7 @@ export class ProxyHandler {
           };
           return;
         }
-        misses.push({ index, request, key });
+        misses.push({ index, request, original, minBlock, key });
       }),
     );
 
@@ -175,7 +197,16 @@ export class ProxyHandler {
     const cacheableMisses = misses.filter((m) => m.key !== null);
 
     if (plainMisses.length > 0) {
-      const responses = await this.forwardBatch(plainMisses.map((m) => m.request));
+      const minBlocks = plainMisses
+        .map((m) => m.minBlock)
+        .filter((b): b is number => b !== null);
+      const { responses } = await this.forwardBatch(
+        plainMisses.map((m) => m.request),
+        {
+          minBlock: minBlocks.length > 0 ? Math.max(...minBlocks) : undefined,
+          downgradeTo: plainMisses.map((m) => m.original),
+        },
+      );
       const byId = new Map<string, JsonRpcResponse>();
       for (const r of responses) byId.set(JSON.stringify(r.id), r);
 
@@ -188,8 +219,11 @@ export class ProxyHandler {
     }
 
     await Promise.all(
-      cacheableMisses.map(async ({ index, request, key }) => {
-        results[index] = await this.fetchAndStore(request, key!, ctx);
+      cacheableMisses.map(async ({ index, request, original, minBlock, key }) => {
+        results[index] = await this.fetchAndStore(request, key!, ctx, {
+          minBlock: minBlock ?? undefined,
+          downgradeTo: original,
+        });
       }),
     );
 
@@ -200,9 +234,14 @@ export class ProxyHandler {
     if (!isJsonRpcRequest(body)) {
       return errorResponse(null, -32600, "Invalid Request");
     }
-    const request = body;
-    const rejection = this.guardRequest(request);
+    const original = body;
+    const rejection = this.guardRequest(original);
     if (rejection !== null) return rejection;
+    if (original.method === "eth_blockNumber") {
+      const local = this.localBlockNumber(original.id);
+      if (local !== null) return local;
+    }
+    const { request, minBlock } = translateLatest(original, this.pool.chainHead);
     const params = Array.isArray(request.params) ? request.params : [];
     const ctx = this.ruleCtx();
     const policy = requestPolicy(request.method, params, ctx);
@@ -213,11 +252,17 @@ export class ProxyHandler {
       if (cached !== null) {
         return { jsonrpc: "2.0", id: request.id, result: JSON.parse(cached) };
       }
-      return this.fetchAndStore(request, key, ctx);
+      return this.fetchAndStore(request, key, ctx, {
+        minBlock: minBlock ?? undefined,
+        downgradeTo: original,
+      });
     }
 
-    const [response] = await this.forwardBatch([request]);
-    return response ?? errorResponse(request.id, -32003, "upstream error");
+    const { responses } = await this.forwardBatch([request], {
+      minBlock: minBlock ?? undefined,
+      downgradeTo: [original],
+    });
+    return responses[0] ?? errorResponse(request.id, -32003, "upstream error");
   }
 
   /**
@@ -230,15 +275,22 @@ export class ProxyHandler {
     request: JsonRpcRequest,
     key: string,
     ctx: CacheRuleContext,
+    opts: { minBlock?: number; downgradeTo?: JsonRpcRequest } = {},
   ): Promise<JsonRpcResponse> {
     let pending = this.inflight.get(key);
     if (pending === undefined) {
       pending = (async () => {
-        const [response] = await this.forwardBatch([request]);
+        const { responses, downgraded } = await this.forwardBatch([request], {
+          minBlock: opts.minBlock,
+          downgradeTo: opts.downgradeTo ? [opts.downgradeTo] : undefined,
+        });
+        const response = responses[0];
         if (!response) {
           return errorResponse(request.id, -32003, "upstream error");
         }
-        if (response.error === undefined) {
+        // A downgraded response came from a node without the target block;
+        // it is not the data the cache key promises, so never store it.
+        if (!downgraded && response.error === undefined) {
           await this.storeResult(request, response, key, ctx);
         }
         return response;
@@ -255,18 +307,34 @@ export class ProxyHandler {
    * Forward a batch of requests to the pool, retrying on a different
    * upstream on transport-level failures only. Never retried when the batch
    * contains a side-effecting method (eth_sendRawTransaction etc.).
+   *
+   * With minBlock set, only upstreams that have that block are considered;
+   * when none qualify, the selection is retried without the constraint and
+   * the downgradeTo requests (with the original "latest" tags) are sent
+   * instead — slightly stale data beats an error. downgraded tells callers
+   * not to cache the response.
    */
   private async forwardBatch(
     requests: JsonRpcRequest[],
-  ): Promise<JsonRpcResponse[]> {
+    opts: { minBlock?: number; downgradeTo?: JsonRpcRequest[] } = {},
+  ): Promise<{ responses: JsonRpcResponse[]; downgraded: boolean }> {
     const noRetry = requests.some((r) => NO_RETRY_METHODS.has(r.method));
     const attempts = noRetry ? 1 : this.config.health.maxRetries;
-    const picks = this.pool.select(attempts);
+    let picks = this.pool.select(attempts, opts.minBlock);
+    let downgraded = false;
 
+    if (picks.length === 0 && opts.minBlock !== undefined) {
+      picks = this.pool.select(attempts);
+      downgraded = true;
+      if (opts.downgradeTo) requests = opts.downgradeTo;
+    }
     if (picks.length === 0) {
-      return requests.map((r) =>
-        errorResponse(r.id, -32002, "no healthy upstream available"),
-      );
+      return {
+        responses: requests.map((r) =>
+          errorResponse(r.id, -32002, "no healthy upstream available"),
+        ),
+        downgraded,
+      };
     }
 
     const payload = requests.length === 1 ? requests[0] : requests;
@@ -280,7 +348,7 @@ export class ProxyHandler {
         const responses = Array.isArray(body) ? body : [body];
         // A legal JSON-RPC error from the upstream is a definitive answer,
         // not a reason to fail over.
-        return responses;
+        return { responses, downgraded };
       } catch (err) {
         if (err instanceof UpstreamTransportError) {
           this.logger?.warn(
@@ -293,9 +361,12 @@ export class ProxyHandler {
       }
     }
 
-    return requests.map((r) =>
-      errorResponse(r.id, -32003, "all upstreams failed"),
-    );
+    return {
+      responses: requests.map((r) =>
+        errorResponse(r.id, -32003, "all upstreams failed"),
+      ),
+      downgraded,
+    };
   }
 
   private async storeResult(
