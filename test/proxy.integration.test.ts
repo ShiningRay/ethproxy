@@ -236,7 +236,7 @@ describe("server endpoints", () => {
   it("exposes /healthz and /status", async () => {
     const node = await startMockNode(1000);
     const { pool, proxy } = await makeProxy([node]);
-    const app = buildServer(proxy, pool);
+    const app = await buildServer(proxy, pool);
 
     const health = await app.inject({ method: "GET", url: "/healthz" });
     expect(health.statusCode).toBe(200);

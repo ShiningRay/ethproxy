@@ -18,7 +18,7 @@ async function main(): Promise<void> {
 
   const cache = new ResponseCache(createCacheBackend(config.cache), console);
   const proxy = new ProxyHandler(pool, cache, config, console);
-  const app = buildServer(proxy, pool);
+  const app = await buildServer(proxy, pool);
 
   const shutdown = async (): Promise<void> => {
     pool.stop();

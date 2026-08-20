@@ -5,6 +5,8 @@ listen:
 upstreams:
   - name: node-a
     url: http://127.0.0.1:18545
+    # WebSocket 端点；不配则按 url 推导（http→ws, https→wss）
+    # wsUrl: ws://127.0.0.1:18546
     weight: 2
   - name: node-b
     url: http://127.0.0.1:28545

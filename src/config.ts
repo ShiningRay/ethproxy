@@ -5,6 +5,8 @@ import { z } from "zod";
 const upstreamSchema = z.object({
   name: z.string().min(1),
   url: z.string().url(),
+  /** WebSocket endpoint; defaults to `url` with http(s) swapped to ws(s). */
+  wsUrl: z.string().url().optional(),
   weight: z.number().int().positive().default(1),
 });
 

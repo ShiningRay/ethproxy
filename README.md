@@ -13,6 +13,7 @@ Ethereum JSON-RPC 反向代理：多上游负载均衡与故障转移、同步�
   - 不缓存：`eth_sendRawTransaction` 等写方法、`pending` 标签、未来区块、`admin_*`/`debug_*` 等管理命名空间、未识别方法（fail-safe）
 - **可插拔缓存后端**：内存 LRU（默认）或 Redis；实现 `CacheBackend` 接口即可扩展
 - **批量请求**：数组请求逐项走缓存管线，未命中项合并为单次批量转发后按 id 归并
+- **WebSocket 透传**：客户端 WS 连接固定到一个健康上游，帧双向原样转发；上游断开会关闭客户端连接，由客户端重连后落到健康节点（不做订阅状态管理）
 - **运维端点**：`GET /healthz`（无健康上游返回 503）、`GET /status`（各节点健康/同步/高度）
 
 ## 快速开始
@@ -26,6 +27,15 @@ npm run build && npm start -- config.yaml
 ```
 
 客户端把节点地址指向 `http://127.0.0.1:8545` 即可。
+
+## Docker
+
+```bash
+docker build -t ethproxy .
+docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
+```
+
+配置文件通过挂载注入；也可以传自定义路径：`docker run ... ethproxy /etc/ethproxy/prod.yaml`。
 
 ## 配置
 
@@ -72,5 +82,5 @@ npm run typecheck # tsc --noEmit
 
 ## 范围外（暂未实现）
 
-- WebSocket / `eth_subscribe`
+- WebSocket 的订阅状态管理与断线自动重订阅（当前为纯透传，重连由客户端负责）
 - 请求限流、鉴权
