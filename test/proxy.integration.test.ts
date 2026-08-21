@@ -535,4 +535,24 @@ describe("server endpoints", () => {
 
     await app.close();
   });
+
+  it("exposes Prometheus metrics on /metrics", async () => {
+    const node = await startMockNode(1000, { eth_gasPrice: () => "0x1" });
+    const { config, pool, proxy } = await makeProxy([node]);
+    const app = await buildServer(proxy, pool, config);
+
+    await proxy.handle({ jsonrpc: "2.0", id: 1, method: "eth_gasPrice", params: [] });
+
+    const res = await app.inject({ method: "GET", url: "/metrics" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/plain");
+    expect(res.body).toContain('ethproxy_rpc_requests_total{method="eth_gasPrice",result="ok"}');
+    expect(res.body).toContain("ethproxy_rpc_request_duration_seconds_bucket");
+    expect(res.body).toContain('ethproxy_upstream_requests_total{upstream="node-0",result="ok"}');
+    expect(res.body).toContain('ethproxy_upstream_healthy{upstream="node-0"} 1');
+    expect(res.body).toContain("ethproxy_chain_head 1000");
+    expect(res.body).toContain("ethproxy_cache_stores_total");
+
+    await app.close();
+  });
 });

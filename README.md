@@ -19,7 +19,7 @@ A reverse proxy for Ethereum JSON-RPC: multi-upstream weighted load balancing wi
 - **Single-flight**: concurrent misses for the same cache key share one upstream request, preventing the thundering herd when short-TTL entries expire
 - **Public-RPC hardening**: `admin_*`/`debug_*`/`personal_*`-style namespaces are rejected by default; batch size, request body size and `eth_getLogs` block span are limited
 - **WebSocket split handling**: regular JSON-RPC over WS goes through the same proxy pipeline as HTTP (caching, load balancing, retries); `eth_subscribe`/`eth_unsubscribe` pass through over a per-client pinned upstream WS connection, with notifications relayed back as-is; if the pinned connection dies the client connection is closed (clients should reconnect and re-subscribe)
-- **Ops endpoints**: `GET /` landing page (live chain height, per-upstream health/WS/latency), `GET /healthz` (503 when no healthy upstream), `GET /status` (JSON status incl. cache hit/miss stats)
+- **Ops endpoints**: `GET /` landing page (live chain height, per-upstream health/WS/latency), `GET /healthz` (503 when no healthy upstream), `GET /status` (JSON status incl. cache hit/miss stats), `GET /metrics` (Prometheus: per-method request counts & duration histograms, upstream health/height/latency, cache stats)
 
 ## Quick start
 

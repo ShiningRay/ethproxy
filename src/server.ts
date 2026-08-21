@@ -2,6 +2,7 @@ import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Config } from "./config.js";
 import { renderIndexPage } from "./index-page.js";
+import { bindMetrics, metricsContentType, renderMetrics } from "./metrics.js";
 import type { UpstreamPool } from "./pool.js";
 import type { ProxyHandler } from "./proxy.js";
 import { handleWsConnection } from "./ws-proxy.js";
@@ -66,6 +67,11 @@ export async function buildServer(
     ...pool.status(),
     cache: proxy.cacheStats(),
   }));
+
+  bindMetrics(pool, proxy);
+  app.get("/metrics", async (_request, reply) => {
+    void reply.header("content-type", metricsContentType).send(await renderMetrics());
+  });
 
   return app;
 }

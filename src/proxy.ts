@@ -9,6 +9,7 @@ import {
   type JsonRpcResponse,
 } from "./rpc.js";
 import { isMethodBlocked, logsRangeViolation } from "./security.js";
+import { rpcDuration, rpcRequests, upstreamRequests } from "./metrics.js";
 import { translateLatest } from "./translate.js";
 import { UpstreamTransportError } from "./upstream.js";
 
@@ -77,20 +78,37 @@ export class ProxyHandler {
   async handle(
     body: unknown,
   ): Promise<JsonRpcResponse | JsonRpcResponse[]> {
+    const startedAt = performance.now();
+    const method = Array.isArray(body)
+      ? "batch"
+      : isJsonRpcRequest(body)
+        ? body.method
+        : "invalid";
+    const record = (result: "ok" | "error"): void => {
+      rpcRequests.inc({ method, result });
+      rpcDuration.observe({ method }, (performance.now() - startedAt) / 1000);
+    };
+
     if (Array.isArray(body)) {
       if (body.length === 0) {
+        record("error");
         return errorResponse(null, -32600, "Invalid Request: empty batch");
       }
       if (body.length > this.config.security.maxBatchSize) {
+        record("error");
         return errorResponse(
           null,
           -32600,
           `batch size ${body.length} exceeds limit ${this.config.security.maxBatchSize}`,
         );
       }
-      return this.handleBatch(body);
+      const responses = await this.handleBatch(body);
+      record("ok");
+      return responses;
     }
-    return this.handleSingle(body);
+    const response = await this.handleSingle(body);
+    record(response.error === undefined ? "ok" : "error");
+    return response;
   }
 
   cacheStats(): CacheStats {
@@ -355,12 +373,14 @@ export class ProxyHandler {
       }
       try {
         const body = await upstream.call(payload);
+        upstreamRequests.inc({ upstream: upstream.name, result: "ok" });
         const responses = Array.isArray(body) ? body : [body];
         // A legal JSON-RPC error from the upstream is a definitive answer,
         // not a reason to fail over.
         return { responses, downgraded };
       } catch (err) {
         if (err instanceof UpstreamTransportError) {
+          upstreamRequests.inc({ upstream: upstream.name, result: "error" });
           this.logger?.warn(
             `forwarding to ${upstream.name} failed, trying next upstream`,
             err.cause ?? err.message,
