@@ -2,6 +2,10 @@ listen:
   host: 0.0.0.0
   port: 8545
 
+# 状态展示页路径：默认 "/"（与 WebSocket 端点同路径）；
+# 改为如 "/dash" 可将页面移出根路径，设为 false 则完全禁用页面（/status JSON 接口不受影响）
+# statusPagePath: "/"
+
 upstreams:
   - name: node-a
     url: http://127.0.0.1:18545

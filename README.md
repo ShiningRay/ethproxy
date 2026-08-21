@@ -49,6 +49,7 @@ See [config.example.yaml](config.example.yaml). Key options:
 | Option | Description | Default |
 |---|---|---|
 | `upstreams[].url` / `weight` / `wsUrl` | Upstream HTTP endpoint, weight, and WS endpoint (derived from `url` when unset) | — |
+| `statusPagePath` | Path of the HTML status page; `false` disables the page entirely (`/status` JSON is unaffected) | `/` |
 | `chainId` | Expected chain id (e.g. 1 = mainnet); majority wins when unset | auto-detect |
 | `health.pollIntervalMs` | Health poll interval | 5000 |
 | `health.maxBlockLag` | Blocks behind the pool head before a node is removed | 5 |

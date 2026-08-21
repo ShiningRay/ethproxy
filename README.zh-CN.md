@@ -49,6 +49,7 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | 配置 | 说明 | 默认 |
 |---|---|---|
 | `upstreams[].url` / `weight` | 上游节点地址与权重 | — |
+| `statusPagePath` | 状态展示页路径；`false` 完全禁用页面（`/status` JSON 接口不受影响） | `/` |
 | `chainId` | 期望的链 ID（如 1 = 主网）；不配则取多数节点为准 | 自动检测 |
 | `health.pollIntervalMs` | 健康轮询间隔 | 5000 |
 | `health.maxBlockLag` | 落后池内最大高度多少块算掉队 | 5 |

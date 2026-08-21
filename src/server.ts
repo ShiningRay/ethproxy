@@ -26,8 +26,14 @@ export async function buildServer(
     return result;
   });
 
-  // GET / serves the landing page for browsers; WebSocket upgrades on the
-  // same path are forwarded to a healthy upstream.
+  // WebSocket upgrades on / are forwarded to a healthy upstream. The HTML
+  // landing page lives at config.statusPagePath ("/" by default; false
+  // disables it). Plain GET / returns 404 when the page is moved or off.
+  const pagePath = config.statusPagePath;
+  const pageHtml = renderIndexPage({
+    cacheBackend: config.cache.enabled ? config.cache.backend : "disabled",
+  });
+
   app.route({
     method: "GET",
     url: "/",
@@ -35,15 +41,19 @@ export async function buildServer(
       handleWsConnection(socket, pool, proxy, app.log);
     },
     handler: async (_request, reply) => {
-      void reply
-        .header("content-type", "text/html; charset=utf-8")
-        .send(
-          renderIndexPage({
-            cacheBackend: config.cache.enabled ? config.cache.backend : "disabled",
-          }),
-        );
+      if (pagePath === "/") {
+        void reply.header("content-type", "text/html; charset=utf-8").send(pageHtml);
+        return;
+      }
+      return reply.code(404).send({ error: "not found" });
     },
   });
+
+  if (pagePath !== "/" && pagePath !== false) {
+    app.get(pagePath, async (_request, reply) => {
+      void reply.header("content-type", "text/html; charset=utf-8").send(pageHtml);
+    });
+  }
 
   app.get("/healthz", async (_request, reply) => {
     if (pool.hasEligible()) {

@@ -22,6 +22,7 @@ function baseConfig(upstream: {
 }): Config {
   return {
     listen: { host: "127.0.0.1", port: 0 },
+    statusPagePath: "/",
     upstreams: [{ ...upstream, weight: 1 }],
     health: {
       pollIntervalMs: 60000,

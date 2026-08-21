@@ -98,6 +98,7 @@ async function startMockNode(
 async function makeProxy(nodes: MockNode[], weights: number[] = []) {
   const config: Config = {
     listen: { host: "127.0.0.1", port: 0 },
+    statusPagePath: "/",
     upstreams: nodes.map((n, i) => ({
       name: `node-${i}`,
       url: n.url,
@@ -478,6 +479,38 @@ describe("server endpoints", () => {
     expect(res.headers["content-type"]).toContain("text/html");
     expect(res.body).toContain("ethproxy");
     expect(res.body).toContain("memory"); // cache backend
+
+    await app.close();
+  });
+
+  it("serves the status page on a custom path and 404s the root", async () => {
+    const node = await startMockNode(1000);
+    const { config, pool, proxy } = await makeProxy([node]);
+    config.statusPagePath = "/dash";
+    const app = await buildServer(proxy, pool, config);
+
+    const custom = await app.inject({ method: "GET", url: "/dash" });
+    expect(custom.statusCode).toBe(200);
+    expect(custom.headers["content-type"]).toContain("text/html");
+
+    const root = await app.inject({ method: "GET", url: "/" });
+    expect(root.statusCode).toBe(404);
+
+    await app.close();
+  });
+
+  it("disables the status page entirely when statusPagePath is false", async () => {
+    const node = await startMockNode(1000);
+    const { config, pool, proxy } = await makeProxy([node]);
+    config.statusPagePath = false;
+    const app = await buildServer(proxy, pool, config);
+
+    const root = await app.inject({ method: "GET", url: "/" });
+    expect(root.statusCode).toBe(404);
+
+    // JSON status endpoint is unaffected
+    const status = await app.inject({ method: "GET", url: "/status" });
+    expect(status.statusCode).toBe(200);
 
     await app.close();
   });

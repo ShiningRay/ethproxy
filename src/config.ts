@@ -70,6 +70,18 @@ const configSchema = z.object({
     .default({ host: "0.0.0.0", port: 8545 }),
   upstreams: z.array(upstreamSchema).min(1),
   /**
+   * Path that serves the HTML status page. Defaults to "/" (shared with the
+   * WebSocket endpoint). Set a custom path to move the page off the root,
+   * or `false` to disable the page entirely (the JSON /status endpoint is
+   * unaffected either way).
+   */
+  statusPagePath: z
+    .union([
+      z.literal(false),
+      z.string().regex(/^\/[a-zA-Z0-9/_-]*$/, "must be an absolute URL path"),
+    ])
+    .default("/"),
+  /**
    * Expected chain id (e.g. 1 for mainnet). When set, upstreams reporting a
    * different eth_chainId are excluded. When unset, the pool adopts the
    * majority chain id among responsive upstreams.
