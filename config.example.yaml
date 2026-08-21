@@ -33,6 +33,7 @@ security:
   maxLogsRange: 10000       # eth_getLogs 最大区块跨度
 
 cache:
+  enabled: true             # 总开关：false 时所有请求绕过缓存（也不会连接 Redis）
   backend: memory           # memory | redis（可扩展其他后端）
   shortTtlMs: 2000          # 链头相关数据的短 TTL（dynamicTtl 开启时作为上限与初始回退值）
   pendingTtlMs: 1000        # 未打包交易收据等的极短 TTL

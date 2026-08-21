@@ -33,6 +33,7 @@ function baseConfig(upstream: {
       retryMaxDelayMs: 0,
     },
     cache: {
+      enabled: true,
       backend: "memory",
       shortTtlMs: 60000,
       pendingTtlMs: 1000,

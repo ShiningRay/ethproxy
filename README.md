@@ -1,35 +1,37 @@
 # ethproxy
 
-Ethereum JSON-RPC 反向代理：多上游负载均衡与故障转移、同步状态感知的健康检查、按请求/响应性质分级缓存。
+[中文文档](README.zh-CN.md)
 
-## 特性
+A reverse proxy for Ethereum JSON-RPC: multi-upstream weighted load balancing with failover, sync-aware health checking, consistency-preserving `latest` handling, and tiered (nature-aware) response caching.
 
-- **多上游**：加权 round-robin；传输层失败自动切换到下一个健康节点（`eth_sendRawTransaction` 等有副作用的方法不重试）
-- **健康与同步检查**：后台主动轮询 `eth_syncing` + `eth_blockNumber` + `eth_chainId`；同步中、连续失败超过阈值、或落后池内最大高度超过 `maxBlockLag` 的节点会被摘除，恢复后自动重新入池
-- **链一致性保护**：配置 `chainId` 后，报告其他链 ID 的节点直接摘除，防止误配不同链的上游；未配置时自动采用多数节点的 chainId 作为基准
-- **分级缓存**（不是无脑缓存）：
-  - 永久缓存：按 hash 定位的不可变数据（区块、交易、已打包的收据）、最终确认的区块号查询（区块号 ≤ 链头 − `finalityDepth`）、链常量（`eth_chainId` 等，1h TTL）
-  - 短 TTL（默认 2s）：`eth_gasPrice` 等链头相关数据
-  - 不缓存：`eth_sendRawTransaction` 等写方法、`pending` 标签、未来区块、`admin_*`/`debug_*` 等管理命名空间、未识别方法（fail-safe）
-- **latest 一致性**：`latest` 标签（含参数缺省的隐含 latest）在进入缓存/转发前翻译为本地观测的池链高 H——同一轮询窗口内所有客户端读到一致的数据，缓存键稳定为 `(method, H)`；翻译后的请求只路由到 `blockNumber >= H` 的节点，无节点满足时回退为原始 `latest` 请求且结果不缓存；`eth_blockNumber` 直接由本地链高应答，不打上游
-- **可插拔缓存后端**：内存 LRU（默认）或 Redis；实现 `CacheBackend` 接口即可扩展
-- **批量请求**：数组请求逐项走缓存管线，未命中项按缓存性分流（可缓存项走 single-flight，其余合并为单次批量转发）
-- **Single-flight 防拥堵**：同一缓存键的并发未命中只发一次上游请求，其余请求共享该结果，避免短 TTL 过期瞬间的惊群效应
-- **公网加固**：默认拒绝 `admin_*`/`debug_*`/`personal_*` 等命名空间；限制批量请求大小、请求体大小和 `eth_getLogs` 区块跨度
-- **WebSocket 分流处理**：普通 JSON-RPC 请求走与 HTTP 相同的代理管线（缓存、负载均衡、重试全部生效）；`eth_subscribe`/`eth_unsubscribe` 通过该客户端专属的上游 WS 长连接透传（订阅状态在节点上），订阅通知原样回推；上游订阅连接断开则关闭客户端连接，由客户端重连重订阅
-- **运维端点**：`GET /` 索引页（浏览器访问，实时展示链高与各上游状态）、`GET /healthz`（无健康上游返回 503）、`GET /status`（JSON 状态）
+## Features
 
-## 快速开始
+- **Multiple upstreams**: weighted round-robin; automatic failover to the next healthy node on transport errors (side-effecting methods like `eth_sendRawTransaction` are never retried)
+- **Health & sync checks**: background polling of `eth_syncing` + `eth_blockNumber` + `eth_chainId`; nodes that are syncing, exceed the consecutive-failure threshold, or lag the pool head by more than `maxBlockLag` are removed and rejoin automatically once recovered
+- **Chain consistency guard**: with `chainId` configured, upstreams reporting a different chain id are excluded outright (protects against misconfigured nodes on other chains); without it, the majority chain id is adopted as the reference
+- **Tiered caching** (not blind caching):
+  - Permanent: hash-addressed immutable data (blocks, transactions, mined receipts), queries at finalized depth (block ≤ head − `finalityDepth`), chain constants (`eth_chainId` etc., 1h TTL)
+  - Short TTL (default 2s): head-dependent data such as `eth_gasPrice`
+  - Never cached: write methods like `eth_sendRawTransaction`, `pending` tags, future blocks, admin namespaces (`admin_*`/`debug_*`/…), unrecognized methods (fail-safe)
+- **`latest` consistency**: `latest` tags — including the implicit latest when the block param is omitted — are translated to the locally observed pool head H before caching/forwarding. All clients read the same height within a poll window and cache keys stay stable as `(method, H)`. Translated requests route only to nodes with `blockNumber >= H`; if none qualify, the original `latest` request is forwarded without caching its response. `eth_blockNumber` is answered directly from the local head with zero upstream calls
+- **Pluggable cache backends**: in-memory LRU (default) or Redis; implement the `CacheBackend` interface to add your own
+- **Batch requests**: each element goes through the cache pipeline individually; misses are split by cacheability (cacheable items via single-flight, the rest merged into one upstream batch)
+- **Single-flight**: concurrent misses for the same cache key share one upstream request, preventing the thundering herd when short-TTL entries expire
+- **Public-RPC hardening**: `admin_*`/`debug_*`/`personal_*`-style namespaces are rejected by default; batch size, request body size and `eth_getLogs` block span are limited
+- **WebSocket split handling**: regular JSON-RPC over WS goes through the same proxy pipeline as HTTP (caching, load balancing, retries); `eth_subscribe`/`eth_unsubscribe` pass through over a per-client pinned upstream WS connection, with notifications relayed back as-is; if the pinned connection dies the client connection is closed (clients should reconnect and re-subscribe)
+- **Ops endpoints**: `GET /` landing page (live chain height, per-upstream health/WS/latency), `GET /healthz` (503 when no healthy upstream), `GET /status` (JSON status incl. cache hit/miss stats)
+
+## Quick start
 
 ```bash
 npm install
-cp config.example.yaml config.yaml   # 按实际节点修改 upstreams
-npm run dev -- config.yaml           # 开发模式
-# 或
+cp config.example.yaml config.yaml   # edit upstreams to match your nodes
+npm run dev -- config.yaml           # development
+# or
 npm run build && npm start -- config.yaml
 ```
 
-客户端把节点地址指向 `http://127.0.0.1:8545` 即可。
+Point your clients at `http://127.0.0.1:8545`.
 
 ## Docker
 
@@ -38,84 +40,87 @@ docker build -t ethproxy .
 docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 ```
 
-配置文件通过挂载注入；也可以传自定义路径：`docker run ... ethproxy /etc/ethproxy/prod.yaml`。
+The config file is injected via mount; a custom path can be passed: `docker run ... ethproxy /etc/ethproxy/prod.yaml`.
 
-## 配置
+## Configuration
 
-见 [config.example.yaml](config.example.yaml)，关键项：
+See [config.example.yaml](config.example.yaml). Key options:
 
-| 配置 | 说明 | 默认 |
+| Option | Description | Default |
 |---|---|---|
-| `upstreams[].url` / `weight` | 上游节点地址与权重 | — |
-| `chainId` | 期望的链 ID（如 1 = 主网）；不配则取多数节点为准 | 自动检测 |
-| `health.pollIntervalMs` | 健康轮询间隔 | 5000 |
-| `health.maxBlockLag` | 落后池内最大高度多少块算掉队 | 5 |
-| `health.failureThreshold` | 连续失败多少次摘除 | 3 |
-| `health.maxRetries` | 单请求最多尝试几个上游 | 2 |
-| `health.retryBaseDelayMs` / `retryMaxDelayMs` | 重试指数退避：`base * 2^(n-1)`，封顶 max | 100 / 1000 |
-| `cache.backend` | `memory` 或 `redis` | `memory` |
-| `cache.shortTtlMs` | 链头相关数据 TTL（dynamicTtl 开启时为上限/回退值） | 2000 |
-| `cache.dynamicTtl` | 按观测出块间隔动态调整短 TTL（间隔/4，钳制在 `[minTtlMs, shortTtlMs]`） | true |
-| `cache.finalityDepth` | 多少块深度视为不可变 | 64 |
-| `cache.redis.url` / `keyPrefix` | Redis 连接与键前缀 | — |
+| `upstreams[].url` / `weight` / `wsUrl` | Upstream HTTP endpoint, weight, and WS endpoint (derived from `url` when unset) | — |
+| `chainId` | Expected chain id (e.g. 1 = mainnet); majority wins when unset | auto-detect |
+| `health.pollIntervalMs` | Health poll interval | 5000 |
+| `health.maxBlockLag` | Blocks behind the pool head before a node is removed | 5 |
+| `health.failureThreshold` | Consecutive failures before removal | 3 |
+| `health.maxRetries` | Upstreams tried per request | 2 |
+| `health.retryBaseDelayMs` / `retryMaxDelayMs` | Exponential retry backoff: `base * 2^(n-1)`, capped at max | 100 / 1000 |
+| `cache.backend` | `memory` or `redis` | `memory` |
+| `cache.enabled` | Master switch; when `false` every request bypasses the cache (and Redis is never connected) | true |
+| `cache.shortTtlMs` | TTL for head-dependent data (ceiling/fallback when dynamicTtl is on) | 2000 |
+| `cache.dynamicTtl` | Derive short TTL from the observed block interval (interval/4, clamped to `[minTtlMs, shortTtlMs]`) | true |
+| `cache.finalityDepth` | Depth below which blocks are treated as immutable | 64 |
+| `cache.redis.url` / `keyPrefix` | Redis connection and key prefix | — |
+| `security.blockedNamespaces` | RPC namespaces rejected outright | admin, personal, debug, trace, miner, txpool |
+| `security.maxBatchSize` / `maxBodyBytes` / `maxLogsRange` | Batch element limit, body size limit, `eth_getLogs` span limit | 100 / 1MB / 10000 |
 
-## 缓存策略细节
+## Caching details
 
-判定逻辑在 [`src/cache-rules.ts`](src/cache-rules.ts)：`requestPolicy(method, params, ctx)` 在请求阶段决定能否缓存，`responseTtl()` 依据响应内容修正（例如 `eth_getTransactionReceipt` 只有含 `blockHash` 才永久缓存，`null` 只给极短 TTL）。缓存键为 `method + sha256(规范化 params)`。
+The decision logic lives in [`src/cache-rules.ts`](src/cache-rules.ts): `requestPolicy(method, params, ctx)` decides cacheability at request time, and `responseTtl()` refines it based on the response (e.g. `eth_getTransactionReceipt` is cached permanently only when it carries a `blockHash`; a `null` result gets a very short TTL). Cache keys are `method + sha256(normalized params)`.
 
-## 扩展缓存后端
+## Extending cache backends
 
-实现 `src/cache/types.ts` 中的接口并在 `src/cache/index.ts` 的工厂注册：
+Implement the interface from `src/cache/types.ts` and register it in the factory in `src/cache/index.ts`:
 
 ```ts
 interface CacheBackend {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string, ttlMs: number | null): Promise<void>; // null = 不过期
+  set(key: string, value: string, ttlMs: number | null): Promise<void>; // null = no expiry
   delete(key: string): Promise<void>;
   close(): Promise<void>;
 }
 ```
 
-缓存后端故障会降级为缓存未命中，不影响代理转发。
+Backend failures degrade gracefully to cache misses; proxying is never blocked by the cache.
 
-## 部署在 Cloudflare 之后（DDoS 防护建议）
+## Deploying behind Cloudflare (DDoS mitigation)
 
-ethproxy 自身只承担应用层防护（方法黑名单、请求形状限制、缓存吸收、single-flight）。完整的防护应当分层，外层由 Cloudflare 和基础设施承担：
+ethproxy itself covers the application layer (method blocklist, request shape limits, cache absorption, single-flight). Full protection should be layered, with Cloudflare and infrastructure taking the outer layers:
 
-**Cloudflare 侧（收益最大，优先做）：**
+**Cloudflare (highest payoff, do first):**
 
-- L3/L4 流量型攻击（SYN flood、UDP 放大等）由 CF 代理模式天然吸收，源站无感
-- 开启 WAF 托管规则、Rate Limiting（如单 IP 每秒 N 请求）、Bot Fight Mode
-- **源站锁定**：安全组/防火墙只对 [Cloudflare 官方 IP 段](https://www.cloudflare.com/ips/) 放行 80/443，防止攻击者绕过 CF 直连源站——不做这一步，CF 的防护形同虚设
-- SSL 模式建议 Full (Strict) + Cloudflare Origin Certificate（拒绝自签名/过期证书的中间人风险）
+- L3/L4 volumetric attacks (SYN floods, UDP amplification) are absorbed by CF's proxied mode, invisible to the origin
+- Enable managed WAF rules, Rate Limiting (e.g. N requests/s per IP), Bot Fight Mode
+- **Origin lockdown**: allow ports 80/443 only from [Cloudflare's official IP ranges](https://www.cloudflare.com/ips/) in your security group/firewall, so attackers cannot bypass CF and hit the origin directly — without this, CF protection is moot
+- Prefer SSL mode Full (Strict) + a Cloudflare Origin Certificate
 
-**nginx / 网关侧：**
+**nginx / gateway:**
 
-- `limit_req_zone` 按 IP 限速、`limit_conn` 限制并发连接
-- WebSocket 升级头映射与长连接超时（本项目部署示例见下文）
-- 代理时透传真实客户端 IP（`X-Forwarded-For` / CF 的 `CF-Connecting-IP`），供后续限流使用
+- `limit_req_zone` per-IP rate limiting, `limit_conn` connection caps
+- WebSocket upgrade header mapping and long timeouts
+- Forward the real client IP (`X-Forwarded-For` / CF's `CF-Connecting-IP`) for downstream rate limiting
 
-**ethproxy 侧（已实现）：**
+**ethproxy (implemented):**
 
-- 默认拒绝 `admin_*` / `debug_*` / `personal_*` 等危险命名空间（`debug_traceTransaction` 一个请求就能让节点 CPU 跑满数秒，是典型的应用层攻击武器）
-- 限制批量请求元素数、请求体大小、`eth_getLogs` 区块跨度
-- 分级缓存 + single-flight：热点只读请求基本不打上游
-- 健康检查 + 故障摘除：上游异常时快速失败而不是请求堆积
+- Dangerous namespaces rejected by default (`debug_traceTransaction` alone can pin a node's CPU for seconds — a classic application-layer attack)
+- Batch size, body size and `eth_getLogs` span limits
+- Tiered caching + single-flight: hot read paths barely touch upstreams
+- Health checking + failover: fail fast instead of piling up requests when upstreams degrade
 
-**部署参考**（本项目生产环境结构）：
+**Reference topology** (this project's production setup):
 
 ```
-客户端 → Cloudflare (WAF/限速/TLS) → nginx (WS 升级/限速) → ethproxy (127.0.0.1:8545) → 上游节点
+clients → Cloudflare (WAF/rate limits/TLS) → nginx (WS upgrade/limits) → ethproxy (127.0.0.1:8545) → upstream nodes
 ```
 
-## 开发
+## Development
 
 ```bash
-npm test          # vitest（单元 + 集成，mock upstream）
+npm test          # vitest (unit + integration, mocked upstreams)
 npm run typecheck # tsc --noEmit
 ```
 
-## 范围外（暂未实现）
+## Out of scope (for now)
 
-- WebSocket 订阅的断线自动重订阅（上游订阅连接断开时客户端连接随之关闭，重连重订阅由客户端负责）
-- 请求限流、鉴权
+- Automatic re-subscription for WebSocket subscriptions (when the pinned upstream connection dies the client connection is closed; clients own reconnect + re-subscribe)
+- Rate limiting and authentication (recommended at the Cloudflare/nginx layer for now)

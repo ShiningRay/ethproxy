@@ -1,5 +1,5 @@
 import { cacheKey, ResponseCache, type CacheStats } from "./cache/index.js";
-import { requestPolicy, responseTtl, type CacheRuleContext } from "./cache-rules.js";
+import { requestPolicy, responseTtl, type CacheRuleContext, type RequestPolicy } from "./cache-rules.js";
 import type { Config } from "./config.js";
 import type { UpstreamPool } from "./pool.js";
 import {
@@ -120,6 +120,16 @@ export class ProxyHandler {
     return null;
   }
 
+  /** Cache policy for a request; everything is uncacheable when caching is off. */
+  private policyFor(
+    method: string,
+    params: unknown[],
+    ctx: CacheRuleContext,
+  ): RequestPolicy {
+    if (!this.config.cache.enabled) return { cacheable: false };
+    return requestPolicy(method, params, ctx);
+  }
+
   private ruleCtx(): CacheRuleContext {
     return {
       chainHead: this.pool.chainHead,
@@ -172,7 +182,7 @@ export class ProxyHandler {
         }
         const { request, minBlock } = translateLatest(original, this.pool.chainHead);
         const params = Array.isArray(request.params) ? request.params : [];
-        const policy = requestPolicy(request.method, params, ctx);
+        const policy = this.policyFor(request.method, params, ctx);
         if (!policy.cacheable) {
           misses.push({ index, request, original, minBlock, key: null });
           return;
@@ -244,7 +254,7 @@ export class ProxyHandler {
     const { request, minBlock } = translateLatest(original, this.pool.chainHead);
     const params = Array.isArray(request.params) ? request.params : [];
     const ctx = this.ruleCtx();
-    const policy = requestPolicy(request.method, params, ctx);
+    const policy = this.policyFor(request.method, params, ctx);
 
     if (policy.cacheable) {
       const key = cacheKey(request.method, params);

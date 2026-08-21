@@ -37,7 +37,11 @@ export async function buildServer(
     handler: async (_request, reply) => {
       void reply
         .header("content-type", "text/html; charset=utf-8")
-        .send(renderIndexPage({ cacheBackend: config.cache.backend }));
+        .send(
+          renderIndexPage({
+            cacheBackend: config.cache.enabled ? config.cache.backend : "disabled",
+          }),
+        );
     },
   });
 

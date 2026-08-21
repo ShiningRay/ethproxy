@@ -113,6 +113,7 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
       retryMaxDelayMs: 0,
     },
     cache: {
+      enabled: true,
       backend: "memory",
       shortTtlMs: 60000, // long enough for deterministic assertions
       pendingTtlMs: 1000,
@@ -247,6 +248,21 @@ describe("ProxyHandler", () => {
     await proxy.handle(req);
     await proxy.handle(req);
     expect(node.hits.get("eth_sendRawTransaction")).toBe(2);
+  });
+
+  it("bypasses the cache entirely when cache.enabled is false", async () => {
+    const node = await startMockNode(1000, { eth_gasPrice: () => "0x3b9aca00" });
+    const { config, proxy } = await makeProxy([node]);
+    config.cache.enabled = false; // read at call time
+
+    const req = { jsonrpc: "2.0" as const, id: 1, method: "eth_gasPrice", params: [] };
+    const first = await proxy.handle(req);
+    const second = await proxy.handle(req);
+    expect(first).toMatchObject({ result: "0x3b9aca00" });
+    expect(second).toMatchObject({ result: "0x3b9aca00" });
+    // every call goes upstream, and nothing is counted as a cache lookup
+    expect(node.hits.get("eth_gasPrice")).toBe(2);
+    expect(proxy.cacheStats()).toMatchObject({ hits: 0, misses: 0, sets: 0 });
   });
 
   it("fails over to the next upstream on transport errors", async () => {

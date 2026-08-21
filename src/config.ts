@@ -22,6 +22,8 @@ const healthSchema = z.object({
 });
 
 const cacheSchema = z.object({
+  /** Master switch: when false, requests bypass the cache entirely. */
+  enabled: z.boolean().default(true),
   backend: z.enum(["memory", "redis"]).default("memory"),
   shortTtlMs: z.number().int().positive().default(2000),
   pendingTtlMs: z.number().int().positive().default(1000),

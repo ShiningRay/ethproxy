@@ -17,7 +17,18 @@ export function cacheKey(method: string, params: unknown[]): string {
   return `${method}:${digest}`;
 }
 
+/** No-op backend used when caching is disabled: never stores, never connects anywhere. */
+class NullCacheBackend implements CacheBackend {
+  async get(): Promise<string | null> {
+    return null;
+  }
+  async set(): Promise<void> {}
+  async delete(): Promise<void> {}
+  async close(): Promise<void> {}
+}
+
 export function createCacheBackend(config: CacheConfig): CacheBackend {
+  if (!config.enabled) return new NullCacheBackend();
   switch (config.backend) {
     case "memory":
       return new MemoryCacheBackend(config.memory.maxEntries);
