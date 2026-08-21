@@ -73,6 +73,7 @@ export function renderIndexPage(meta: IndexPageMeta): string {
   <footer>
     <div>HTTP JSON-RPC: <code>POST /</code> · WebSocket: <code>ws(s)://&lt;host&gt;/</code></div>
     <div>Machine-readable status: <code>GET /status</code> · Health check: <code>GET /healthz</code></div>
+    <div>Source: <a href="https://github.com/ShiningRay/ethproxy" style="color:#58a6ff">github.com/ShiningRay/ethproxy</a></div>
     <div class="muted">auto-refreshes every 5s</div>
   </footer>
 </main>
