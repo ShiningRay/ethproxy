@@ -49,6 +49,14 @@ function baseConfig(upstream: {
       maxBodyBytes: 1048576,
       maxLogsRange: 10000,
     },
+    rateLimit: {
+      enabled: false,
+      requestsPerSecond: 50,
+      burst: 100,
+      wsMessagesPerSecond: 20,
+      wsBurst: 40,
+      maxSubscriptionsPerIp: 20,
+    },
   };
 }
 
@@ -92,11 +100,13 @@ interface WsMock {
 }
 
 /**
- * WS endpoint: answers eth_subscribe with a fixed subscription id and pushes
- * one eth_subscription notification; other methods get `ok:<method>`.
+ * WS endpoint: answers eth_subscribe with incrementing subscription ids and
+ * pushes one eth_subscription notification each; eth_unsubscribe returns
+ * true; other methods get `ok:<method>`.
  */
 async function startWsMock(): Promise<WsMock> {
   const received: string[] = [];
+  let subCounter = 0;
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   await new Promise<void>((r) => wss.on("listening", r));
   wss.on("connection", (ws) => {
@@ -105,16 +115,21 @@ async function startWsMock(): Promise<WsMock> {
       received.push(text);
       const req = JSON.parse(text) as { id: number; method: string };
       if (req.method === "eth_subscribe") {
-        ws.send(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: "0xsub1" }));
+        const subId = `0xsub${++subCounter}`;
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: subId }));
         setTimeout(() => {
           ws.send(
             JSON.stringify({
               jsonrpc: "2.0",
               method: "eth_subscription",
-              params: { subscription: "0xsub1", result: { number: "0x3e8" } },
+              params: { subscription: subId, result: { number: "0x3e8" } },
             }),
           );
         }, 30);
+        return;
+      }
+      if (req.method === "eth_unsubscribe") {
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: true }));
         return;
       }
       ws.send(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: `ok:${req.method}` }));
@@ -125,8 +140,12 @@ async function startWsMock(): Promise<WsMock> {
   return { url: `ws://127.0.0.1:${port}`, received };
 }
 
-async function makeApp(upstream: { url: string; wsUrl?: string }) {
+async function makeApp(
+  upstream: { url: string; wsUrl?: string },
+  tweak?: (config: Config) => void,
+) {
   const config = baseConfig({ name: "a", ...upstream });
+  tweak?.(config);
   const pool = new UpstreamPool(config.upstreams, config.health);
   await pool.pollAll();
   const proxy = new ProxyHandler(
@@ -221,6 +240,65 @@ describe("WebSocket handling", () => {
     });
     const [res] = await messages;
     expect(res).toMatchObject({ id: 1, error: { code: -32002 } });
+    client.close();
+  });
+
+  it("rate limits WS messages per client IP", async () => {
+    const http = await startHttpMock(1000);
+    const { port } = await makeApp({ url: http.url }, (config) => {
+      config.rateLimit.enabled = true;
+      config.rateLimit.wsMessagesPerSecond = 1;
+      config.rateLimit.wsBurst = 1;
+    });
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/`);
+    const messages = collect(client, 2);
+    client.on("open", () => {
+      client.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: ["0xaaa", "latest"] }));
+      client.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_getBalance", params: ["0xaaa", "latest"] }));
+    });
+    const [a, b] = await messages;
+    const byId = new Map([a, b].map((m) => [(m as { id: number }).id, m]));
+    expect(byId.get(1)).toMatchObject({ result: "0x1" });
+    expect(byId.get(2)).toMatchObject({ error: { code: -32005 } });
+    client.close();
+  });
+
+  it("limits concurrent subscriptions per client IP and frees slots on unsubscribe", async () => {
+    const http = await startHttpMock(1000);
+    const ws = await startWsMock();
+    const { port } = await makeApp({ url: http.url, wsUrl: ws.url }, (config) => {
+      config.rateLimit.maxSubscriptionsPerIp = 2;
+    });
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/`);
+    await new Promise<void>((r) => client.on("open", r));
+
+    const call = (id: number, method: string, params: unknown[] = []) =>
+      new Promise<Record<string, unknown>>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("timeout")), 5000);
+        const onMsg = (data: WebSocket.RawData): void => {
+          const msg = JSON.parse(data.toString()) as { id?: number };
+          if (msg.id === id) {
+            client.off("message", onMsg);
+            clearTimeout(timer);
+            resolve(msg as Record<string, unknown>);
+          }
+        };
+        client.on("message", onMsg);
+        client.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+      });
+
+    expect(await call(1, "eth_subscribe", ["newHeads"])).toMatchObject({ result: "0xsub1" });
+    expect(await call(2, "eth_subscribe", ["newHeads"])).toMatchObject({ result: "0xsub2" });
+    // third subscription exceeds the per-IP cap of 2
+    expect(await call(3, "eth_subscribe", ["newHeads"])).toMatchObject({
+      error: { code: -32005 },
+    });
+    // unsubscribing frees a slot
+    expect(await call(4, "eth_unsubscribe", ["0xsub1"])).toMatchObject({ result: true });
+    expect(await call(5, "eth_subscribe", ["newHeads"])).toMatchObject({ result: "0xsub3" });
+
     client.close();
   });
 });

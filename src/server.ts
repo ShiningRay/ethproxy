@@ -5,7 +5,9 @@ import { renderIndexPage } from "./index-page.js";
 import { bindMetrics, metricsContentType, renderMetrics } from "./metrics.js";
 import type { UpstreamPool } from "./pool.js";
 import type { ProxyHandler } from "./proxy.js";
-import { handleWsConnection } from "./ws-proxy.js";
+import { RateLimiter } from "./ratelimit.js";
+import { errorResponse } from "./rpc.js";
+import { handleWsConnection, SubscriptionRegistry } from "./ws-proxy.js";
 
 export async function buildServer(
   proxy: ProxyHandler,
@@ -15,6 +17,23 @@ export async function buildServer(
   const app = Fastify({
     logger: true,
     bodyLimit: config.security.maxBodyBytes,
+    // We sit behind nginx/Cloudflare: trust X-Forwarded-For for client IPs
+    // (rate limiting depends on it). Do not expose the port directly.
+    trustProxy: true,
+  });
+
+  const httpLimiter = new RateLimiter(
+    config.rateLimit.requestsPerSecond,
+    config.rateLimit.burst,
+  );
+  const wsLimiter = new RateLimiter(
+    config.rateLimit.wsMessagesPerSecond,
+    config.rateLimit.wsBurst,
+  );
+  const subscriptions = new SubscriptionRegistry();
+  app.addHook("onClose", async () => {
+    httpLimiter.close();
+    wsLimiter.close();
   });
 
   // Must be awaited: the plugin's onRoute hook only wraps routes registered
@@ -22,6 +41,15 @@ export async function buildServer(
   await app.register(websocket);
 
   app.post("/", async (request, reply) => {
+    if (config.rateLimit.enabled) {
+      const cost = Array.isArray(request.body) ? request.body.length : 1;
+      if (!httpLimiter.take(request.ip, cost)) {
+        return reply
+          .code(429)
+          .header("content-type", "application/json")
+          .send(errorResponse(null, -32005, "rate limit exceeded"));
+      }
+    }
     const result = await proxy.handle(request.body);
     void reply.header("content-type", "application/json");
     return result;
@@ -38,8 +66,11 @@ export async function buildServer(
   app.route({
     method: "GET",
     url: "/",
-    wsHandler: (socket) => {
-      handleWsConnection(socket, pool, proxy, app.log);
+    wsHandler: (socket, request) => {
+      handleWsConnection(socket, pool, proxy, app.log, {
+        limiter: config.rateLimit.enabled ? wsLimiter : undefined,
+        clientIp: request.ip,
+      }, subscriptions, config.rateLimit.maxSubscriptionsPerIp);
     },
     handler: async (_request, reply) => {
       if (pagePath === "/") {

@@ -62,6 +62,12 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `cache.dynamicTtl` | 按观测出块间隔动态调整短 TTL（间隔/4，钳制在 `[minTtlMs, shortTtlMs]`） | true |
 | `cache.finalityDepth` | 多少块深度视为不可变 | 64 |
 | `cache.redis.url` / `keyPrefix` | Redis 连接与键前缀 | — |
+| `security.blockedNamespaces` | 直接拒绝的 RPC 命名空间 | admin, personal, debug, trace, miner, txpool |
+| `security.maxBatchSize` / `maxBodyBytes` / `maxLogsRange` | 批量大小、请求体、`eth_getLogs` 跨度上限 | 100 / 1MB / 10000 |
+| `rateLimit.enabled` | 按客户端 IP 限速总开关（HTTP 429 / WS 返回 -32005） | true |
+| `rateLimit.requestsPerSecond` / `burst` | HTTP 限速速率与突发容量（批量按元素计费） | 50 / 100 |
+| `rateLimit.wsMessagesPerSecond` / `wsBurst` | WS 消息限速速率与突发容量 | 20 / 40 |
+| `rateLimit.maxSubscriptionsPerIp` | 同一 IP 并发订阅数上限（跨连接合计，退订/断连释放） | 20 |
 
 ## 缓存策略细节
 
@@ -122,4 +128,4 @@ npm run typecheck # tsc --noEmit
 ## 范围外（暂未实现）
 
 - WebSocket 订阅的断线自动重订阅（上游订阅连接断开时客户端连接随之关闭，重连重订阅由客户端负责）
-- 请求限流、鉴权
+- 鉴权

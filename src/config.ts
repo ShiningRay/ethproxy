@@ -61,6 +61,18 @@ const securitySchema = z.object({
   maxLogsRange: z.number().int().positive().default(10000),
 });
 
+const rateLimitSchema = z.object({
+  /** Per-client-IP token bucket for HTTP JSON-RPC (and per-IP for WS messages). */
+  enabled: z.boolean().default(true),
+  requestsPerSecond: z.number().positive().default(50),
+  burst: z.number().int().positive().default(100),
+  /** WS messages per second per client IP (each JSON-RPC call costs 1). */
+  wsMessagesPerSecond: z.number().positive().default(20),
+  wsBurst: z.number().int().positive().default(40),
+  /** Max concurrent eth_subscribe subscriptions per client IP (across connections). */
+  maxSubscriptionsPerIp: z.number().int().positive().default(20),
+});
+
 const configSchema = z.object({
   listen: z
     .object({
@@ -90,6 +102,7 @@ const configSchema = z.object({
   health: healthSchema.default({}),
   cache: cacheSchema.default({}),
   security: securitySchema.default({}),
+  rateLimit: rateLimitSchema.default({}),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -97,6 +110,7 @@ export type UpstreamConfig = z.infer<typeof upstreamSchema>;
 export type HealthConfig = z.infer<typeof healthSchema>;
 export type CacheConfig = z.infer<typeof cacheSchema>;
 export type SecurityConfig = z.infer<typeof securitySchema>;
+export type RateLimitConfig = z.infer<typeof rateLimitSchema>;
 
 export function loadConfig(path: string): Config {
   const raw = readFileSync(path, "utf8");

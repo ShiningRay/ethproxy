@@ -64,6 +64,10 @@ See [config.example.yaml](config.example.yaml). Key options:
 | `cache.redis.url` / `keyPrefix` | Redis connection and key prefix | — |
 | `security.blockedNamespaces` | RPC namespaces rejected outright | admin, personal, debug, trace, miner, txpool |
 | `security.maxBatchSize` / `maxBodyBytes` / `maxLogsRange` | Batch element limit, body size limit, `eth_getLogs` span limit | 100 / 1MB / 10000 |
+| `rateLimit.enabled` | Per-client-IP rate limiting (HTTP 429 / WS error -32005) | true |
+| `rateLimit.requestsPerSecond` / `burst` | HTTP rate and burst (batches cost their element count) | 50 / 100 |
+| `rateLimit.wsMessagesPerSecond` / `wsBurst` | WS message rate and burst | 20 / 40 |
+| `rateLimit.maxSubscriptionsPerIp` | Max concurrent subscriptions per IP (across connections; freed on unsubscribe/disconnect) | 20 |
 
 ## Caching details
 
@@ -124,4 +128,4 @@ npm run typecheck # tsc --noEmit
 ## Out of scope (for now)
 
 - Automatic re-subscription for WebSocket subscriptions (when the pinned upstream connection dies the client connection is closed; clients own reconnect + re-subscribe)
-- Rate limiting and authentication (recommended at the Cloudflare/nginx layer for now)
+- Authentication

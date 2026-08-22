@@ -129,6 +129,14 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
       maxBodyBytes: 1048576,
       maxLogsRange: 100,
     },
+    rateLimit: {
+      enabled: false,
+      requestsPerSecond: 50,
+      burst: 100,
+      wsMessagesPerSecond: 20,
+      wsBurst: 40,
+      maxSubscriptionsPerIp: 20,
+    },
   };
   const pool = new UpstreamPool(config.upstreams, config.health);
   await pool.pollAll();
@@ -552,6 +560,35 @@ describe("server endpoints", () => {
     expect(res.body).toContain('ethproxy_upstream_healthy{upstream="node-0"} 1');
     expect(res.body).toContain("ethproxy_chain_head 1000");
     expect(res.body).toContain("ethproxy_cache_stores_total");
+
+    await app.close();
+  });
+
+  it("rate limits HTTP requests with 429 when the bucket is empty", async () => {
+    const node = await startMockNode(1000, { eth_gasPrice: () => "0x1" });
+    const { config, pool, proxy } = await makeProxy([node]);
+    config.rateLimit = {
+      enabled: true,
+      requestsPerSecond: 1,
+      burst: 2,
+      wsMessagesPerSecond: 20,
+      wsBurst: 40,
+      maxSubscriptionsPerIp: 20,
+    };
+    const app = await buildServer(proxy, pool, config);
+
+    const post = () =>
+      app.inject({
+        method: "POST",
+        url: "/",
+        payload: { jsonrpc: "2.0", id: 1, method: "eth_gasPrice", params: [] },
+      });
+
+    expect((await post()).statusCode).toBe(200);
+    expect((await post()).statusCode).toBe(200);
+    const limited = await post();
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toMatchObject({ error: { code: -32005 } });
 
     await app.close();
   });
