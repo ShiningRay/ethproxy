@@ -68,6 +68,7 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `rateLimit.requestsPerSecond` / `burst` | HTTP 限速速率与突发容量（批量按元素计费） | 50 / 100 |
 | `rateLimit.wsMessagesPerSecond` / `wsBurst` | WS 消息限速速率与突发容量 | 20 / 40 |
 | `rateLimit.maxSubscriptionsPerIp` | 同一 IP 并发订阅数上限（跨连接合计，退订/断连释放） | 20 |
+| `cors.enabled` / `cors.origin` | 跨域配置；`*` 允许任意域，多个域逗号分隔 | true / `*` |
 
 ## 缓存策略细节
 

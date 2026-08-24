@@ -57,6 +57,7 @@ function baseConfig(upstream: {
       wsBurst: 40,
       maxSubscriptionsPerIp: 20,
     },
+    cors: { enabled: true, origin: "*" },
   };
 }
 

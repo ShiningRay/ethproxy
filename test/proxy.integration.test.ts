@@ -137,6 +137,7 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
       wsBurst: 40,
       maxSubscriptionsPerIp: 20,
     },
+    cors: { enabled: true, origin: "*" },
   };
   const pool = new UpstreamPool(config.upstreams, config.health);
   await pool.pollAll();
@@ -589,6 +590,58 @@ describe("server endpoints", () => {
     const limited = await post();
     expect(limited.statusCode).toBe(429);
     expect(limited.json()).toMatchObject({ error: { code: -32005 } });
+
+    await app.close();
+  });
+
+  it("allows any origin by default (CORS)", async () => {
+    const node = await startMockNode(1000, { eth_gasPrice: () => "0x1" });
+    const { config, pool, proxy } = await makeProxy([node]);
+    const app = await buildServer(proxy, pool, config);
+
+    const preflight = await app.inject({
+      method: "OPTIONS",
+      url: "/",
+      headers: {
+        origin: "https://dapp.example.com",
+        "access-control-request-method": "POST",
+      },
+    });
+    expect(preflight.headers["access-control-allow-origin"]).toBe("*");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/",
+      headers: { origin: "https://dapp.example.com" },
+      payload: { jsonrpc: "2.0", id: 1, method: "eth_gasPrice", params: [] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["access-control-allow-origin"]).toBe("*");
+
+    await app.close();
+  });
+
+  it("restricts CORS to configured origins", async () => {
+    const node = await startMockNode(1000, { eth_gasPrice: () => "0x1" });
+    const { config, pool, proxy } = await makeProxy([node]);
+    config.cors.origin = "https://dapp.example.com";
+    const app = await buildServer(proxy, pool, config);
+
+    const allowed = await app.inject({
+      method: "POST",
+      url: "/",
+      headers: { origin: "https://dapp.example.com" },
+      payload: { jsonrpc: "2.0", id: 1, method: "eth_gasPrice", params: [] },
+    });
+    expect(allowed.headers["access-control-allow-origin"]).toBe("https://dapp.example.com");
+
+    const denied = await app.inject({
+      method: "POST",
+      url: "/",
+      headers: { origin: "https://evil.example.com" },
+      payload: { jsonrpc: "2.0", id: 1, method: "eth_gasPrice", params: [] },
+    });
+    expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
 
     await app.close();
   });

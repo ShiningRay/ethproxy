@@ -1,3 +1,4 @@
+import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Config } from "./config.js";
@@ -39,6 +40,13 @@ export async function buildServer(
   // Must be awaited: the plugin's onRoute hook only wraps routes registered
   // after the plugin has loaded.
   await app.register(websocket);
+
+  if (config.cors.enabled) {
+    const origin = config.cors.origin.trim();
+    await app.register(cors, {
+      origin: origin === "*" ? "*" : origin.split(",").map((o) => o.trim()),
+    });
+  }
 
   app.post("/", async (request, reply) => {
     if (config.rateLimit.enabled) {

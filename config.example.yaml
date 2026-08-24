@@ -44,6 +44,10 @@ rateLimit:
   wsBurst: 40
   maxSubscriptionsPerIp: 20 # 同一 IP 的并发 eth_subscribe 订阅数上限（跨连接合计）
 
+cors:
+  enabled: true             # 跨域支持（浏览器 DApp 需要）
+  origin: "*"               # "*" 允许任意域；多个域用逗号分隔，如 "https://a.com, https://b.com"
+
 cache:
   enabled: true             # 总开关：false 时所有请求绕过缓存（也不会连接 Redis）
   backend: memory           # memory | redis（可扩展其他后端）

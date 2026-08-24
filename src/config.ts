@@ -73,6 +73,12 @@ const rateLimitSchema = z.object({
   maxSubscriptionsPerIp: z.number().int().positive().default(20),
 });
 
+const corsSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** "*" allows any origin; otherwise a comma-separated list of origins. */
+  origin: z.string().default("*"),
+});
+
 const configSchema = z.object({
   listen: z
     .object({
@@ -103,6 +109,7 @@ const configSchema = z.object({
   cache: cacheSchema.default({}),
   security: securitySchema.default({}),
   rateLimit: rateLimitSchema.default({}),
+  cors: corsSchema.default({}),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -111,6 +118,7 @@ export type HealthConfig = z.infer<typeof healthSchema>;
 export type CacheConfig = z.infer<typeof cacheSchema>;
 export type SecurityConfig = z.infer<typeof securitySchema>;
 export type RateLimitConfig = z.infer<typeof rateLimitSchema>;
+export type CorsConfig = z.infer<typeof corsSchema>;
 
 export function loadConfig(path: string): Config {
   const raw = readFileSync(path, "utf8");

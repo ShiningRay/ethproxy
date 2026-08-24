@@ -68,6 +68,7 @@ See [config.example.yaml](config.example.yaml). Key options:
 | `rateLimit.requestsPerSecond` / `burst` | HTTP rate and burst (batches cost their element count) | 50 / 100 |
 | `rateLimit.wsMessagesPerSecond` / `wsBurst` | WS message rate and burst | 20 / 40 |
 | `rateLimit.maxSubscriptionsPerIp` | Max concurrent subscriptions per IP (across connections; freed on unsubscribe/disconnect) | 20 |
+| `cors.enabled` / `cors.origin` | CORS settings; `*` allows any origin, comma-separate multiple origins | true / `*` |
 
 ## Caching details
 
