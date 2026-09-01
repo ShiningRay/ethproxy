@@ -28,6 +28,8 @@ health:
   maxRetries: 2             # 单请求最多尝试的上游数
   retryBaseDelayMs: 100     # 重试退避基数：第 n 次重试延迟 base * 2^(n-1)
   retryMaxDelayMs: 1000     # 重试退避上限
+  wsHeads: true             # 通过持久的 eth_subscribe("newHeads") WS 连接跟踪链高（WS 断开时自动回退 HTTP 轮询）；
+                            # false 时块高仅来自 HTTP 轮询，WS 可用性改为每轮探测
 
 security:
   # 直接拒绝的 RPC 命名空间（公网入口加固）
@@ -46,6 +48,17 @@ rateLimit:
 
 filters:
   stickyTtlMs: 300000       # 代理侧 filter ID 映射的空闲 TTL（粘滞路由）；每次轮询刷新，对齐 geth 默认 5 分钟的 filter 过期
+
+txpool:
+  mirror: false             # 通过上游 WS newPendingTransactions 订阅维护本地 pending 交易镜像，
+                            # 并本地应答客户端的 eth_subscribe("newPendingTransactions")；
+                            # 与 wsHeads 共用每上游一条的持久 WS 连接。默认关闭（高频事件流）
+
+syncing:
+  mirror: false             # 本地应答客户端的 eth_subscribe("syncing")：只要任一上游处于同步中就返回
+                            # syncing（带进度对象），全部同步完才回 false（订阅后立即回当前状态，
+                            # 之后只在聚合状态变化时推送）。状态来自上游 WS syncing 订阅，
+                            # HTTP 健康轮询作回退；与 wsHeads 共用每上游一条的持久 WS 连接。默认关闭
 
 cors:
   enabled: true             # 跨域支持（浏览器 DApp 需要）

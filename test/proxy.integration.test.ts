@@ -112,6 +112,7 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
       maxRetries: 2,
       retryBaseDelayMs: 0,
       retryMaxDelayMs: 0,
+      wsHeads: true,
     },
     cache: {
       enabled: true,
@@ -138,6 +139,8 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
       maxSubscriptionsPerIp: 20,
     },
     filters: { stickyTtlMs: 300000 },
+    txpool: { mirror: false },
+    syncing: { mirror: false },
     cors: { enabled: true, origin: "*" },
   };
   const pool = new UpstreamPool(config.upstreams, config.health);

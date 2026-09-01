@@ -3,6 +3,7 @@ import { requestPolicy, responseTtl, type CacheRuleContext, type RequestPolicy }
 import type { Config } from "./config.js";
 import {
   FILTER_CREATE_METHODS,
+  FILTER_POLL_METHODS,
   FILTER_UNINSTALL_METHOD,
   isFilterMethod,
   StickyFilterRouter,
@@ -12,6 +13,7 @@ import {
   errorResponse,
   formatRequestForLog,
   isJsonRpcRequest,
+  parseQuantity,
   type JsonRpcRequest,
   type JsonRpcResponse,
 } from "./rpc.js";
@@ -19,6 +21,7 @@ import { isMethodBlocked, logsRangeViolation } from "./security.js";
 import { rpcDuration, rpcRequests, upstreamRequests } from "./metrics.js";
 import { translateLatest } from "./translate.js";
 import { Upstream, UpstreamTransportError } from "./upstream.js";
+import { randomBytes } from "node:crypto";
 
 export interface ProxyLogger {
   info: (msg: string, ...args: unknown[]) => void;
@@ -98,6 +101,25 @@ export class ProxyHandler {
     Promise<{ response: JsonRpcResponse; upstreamMs: number; upstreamName?: string }>
   >();
 
+  /**
+   * Head hashes already warmed into the cache, so duplicate newHeads
+   * announcements from several upstreams cause at most one fetch.
+   */
+  private readonly warmedHeads = new Set<string>();
+
+  /**
+   * Rolling buffer of recently observed heads (ascending arrival order),
+   * backing locally served eth_newBlockFilter instances.
+   */
+  private readonly recentHeads: { number: number; hash: string }[] = [];
+  private static readonly MAX_RECENT_HEADS = 2048;
+
+  /** Locally served block filters: proxyId -> cursor + idle expiry. */
+  private readonly localBlockFilters = new Map<
+    string,
+    { cursor: number; expiresAt: number }
+  >();
+
   constructor(
     private readonly pool: UpstreamPool,
     private readonly cache: ResponseCache,
@@ -106,7 +128,23 @@ export class ProxyHandler {
       config.filters.stickyTtlMs,
     ),
     private readonly logger?: ProxyLogger,
-  ) {}
+  ) {
+    pool.onNewHead((head, upstreamName) => {
+      this.recordHead(head);
+      void this.warmBlockFromHead(upstreamName, head);
+    });
+  }
+
+  /** Append an observed head to the rolling buffer (pool already deduped). */
+  private recordHead(head: Record<string, unknown>): void {
+    const n = parseQuantity(head.number);
+    const hash = typeof head.hash === "string" ? head.hash : null;
+    if (n === null || hash === null) return;
+    this.recentHeads.push({ number: n, hash });
+    if (this.recentHeads.length > ProxyHandler.MAX_RECENT_HEADS) {
+      this.recentHeads.splice(0, this.recentHeads.length - ProxyHandler.MAX_RECENT_HEADS);
+    }
+  }
 
   async handle(
     body: unknown,
@@ -218,6 +256,107 @@ export class ProxyHandler {
     const head = this.pool.chainHead;
     if (head === null) return null;
     return { jsonrpc: "2.0", id, result: `0x${head.toString(16)}` };
+  }
+
+  /**
+   * Warm the response cache from a newHeads payload, so the fresh head is
+   * served as if eth_getBlockByNumber / eth_getBlockByHash had already been
+   * called for it.
+   *
+   * Most clients push a bare header (no transactions field); the block is
+   * then fetched once from the announcing upstream to cache a complete,
+   * correct answer. When the payload already carries the transaction list
+   * (e.g. geth's includeTransactions extension) it is cached directly.
+   * Best-effort: failures are logged, never thrown. Entries use the short
+   * head TTL so a reorged head expires quickly.
+   */
+  async warmBlockFromHead(
+    upstreamName: string,
+    head: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.config.cache.enabled) return;
+    const hash = typeof head.hash === "string" ? head.hash : null;
+    if (hash === null || typeof head.number !== "string") return;
+    if (this.warmedHeads.has(hash)) return;
+    this.warmedHeads.add(hash);
+    if (this.warmedHeads.size > 256) {
+      const oldest = this.warmedHeads.values().next().value;
+      if (oldest !== undefined) this.warmedHeads.delete(oldest);
+    }
+
+    try {
+      if (Array.isArray(head.transactions)) {
+        await this.storeHeadedBlock(head);
+        return;
+      }
+      const pinned = this.pool.byName(upstreamName);
+      if (pinned === undefined) return;
+      const body = await pinned.call({
+        jsonrpc: "2.0",
+        id: 0,
+        method: "eth_getBlockByHash",
+        params: [hash, false],
+      });
+      upstreamRequests.inc({ upstream: upstreamName, result: "ok" });
+      const response = Array.isArray(body) ? body[0] : body;
+      if (
+        response !== undefined &&
+        response.error === undefined &&
+        typeof response.result === "object" &&
+        response.result !== null
+      ) {
+        await this.storeHeadedBlock(response.result as Record<string, unknown>);
+      }
+    } catch (err) {
+      upstreamRequests.inc({ upstream: upstreamName, result: "error" });
+      this.logger?.warn(`head cache warming failed for ${hash}`, err);
+    }
+  }
+
+  /**
+   * Store a block object under the cache keys of the common
+   * eth_getBlockByNumber / eth_getBlockByHash call shapes. The fullTx=false
+   * shapes (including the omitted-flag form) require transactions as hashes;
+   * the fullTx=true shapes are only written when full transaction objects
+   * are present (or the block is empty, where both shapes coincide).
+   */
+  private async storeHeadedBlock(block: Record<string, unknown>): Promise<void> {
+    const hash = typeof block.hash === "string" ? block.hash : null;
+    const numberHex = typeof block.number === "string" ? block.number : null;
+    if (hash === null || numberHex === null) return;
+    const ttlMs = computeShortTtlMs(
+      this.pool.estimatedBlockIntervalMs,
+      this.config.cache,
+    );
+
+    const txs = Array.isArray(block.transactions) ? block.transactions : [];
+    const hasFullTx = txs.length > 0 && typeof txs[0] === "object" && txs[0] !== null;
+    const asHashes = hasFullTx
+      ? {
+          ...block,
+          transactions: txs.map(
+            (t) => (t as Record<string, unknown>).hash,
+          ),
+        }
+      : block;
+
+    const entries: { method: string; params: unknown[]; value: unknown }[] = [
+      { method: "eth_getBlockByNumber", params: [numberHex], value: asHashes },
+      { method: "eth_getBlockByNumber", params: [numberHex, false], value: asHashes },
+      { method: "eth_getBlockByHash", params: [hash], value: asHashes },
+      { method: "eth_getBlockByHash", params: [hash, false], value: asHashes },
+    ];
+    if (hasFullTx || txs.length === 0) {
+      entries.push(
+        { method: "eth_getBlockByNumber", params: [numberHex, true], value: block },
+        { method: "eth_getBlockByHash", params: [hash, true], value: block },
+      );
+    }
+    await Promise.all(
+      entries.map((e) =>
+        this.cache.set(cacheKey(e.method, e.params), JSON.stringify(e.value), ttlMs),
+      ),
+    );
   }
 
   private async handleBatch(
@@ -454,19 +593,28 @@ export class ProxyHandler {
   }
 
   /**
-   * Handle one filter call with sticky routing.
+   * Handle one filter call. Two paths:
    *
-   * Filter state lives in a single node's memory and ids are node-local, so:
-   * - creation is forwarded through the normal pool; the node-local id in the
-   *   response is replaced by a proxy-issued id recorded in the sticky table;
-   * - polling / uninstall rewrite params[0] back to the node-local id and are
-   *   pinned to the upstream that owns the filter — failover to another node
-   *   is pointless, the filter does not exist there.
+   * - eth_newBlockFilter is served locally when the pool tracks heads via
+   *   its own upstream newHeads subscriptions (health.wsHeads): the proxy
+   *   issues the id and answers polls from its rolling head buffer, with no
+   *   upstream involvement at all.
+   * - Everything else uses sticky routing. Filter state lives in a single
+   *   node's memory and ids are node-local, so creation is forwarded through
+   *   the normal pool and the node-local id in the response is replaced by a
+   *   proxy-issued id recorded in the sticky table; polling / uninstall
+   *   rewrite params[0] back to the node-local id and are pinned to the
+   *   owning upstream — failover to another node is pointless, the filter
+   *   does not exist there.
    */
   private async handleFilterCall(
     request: JsonRpcRequest,
     metrics: RequestMetrics,
   ): Promise<{ response: JsonRpcResponse; outcome: CacheOutcome }> {
+    if (request.method === "eth_newBlockFilter" && this.pool.localHeadsEnabled) {
+      return this.createLocalBlockFilter(request);
+    }
+
     if (FILTER_CREATE_METHODS.has(request.method)) {
       const { responses, upstreamMs, upstreamName } = await this.forwardBatch([
         request,
@@ -488,6 +636,38 @@ export class ProxyHandler {
 
     const params = Array.isArray(request.params) ? request.params : [];
     const proxyId = typeof params[0] === "string" ? params[0] : "";
+
+    // Locally served block filters take precedence; ids are proxy-issued.
+    if (
+      FILTER_POLL_METHODS.has(request.method) ||
+      request.method === FILTER_UNINSTALL_METHOD
+    ) {
+      const local =
+        this.localBlockFilters.size > 0
+          ? this.lookupLocalBlockFilter(proxyId)
+          : null;
+      if (local !== null) {
+        if (request.method === FILTER_UNINSTALL_METHOD) {
+          this.localBlockFilters.delete(proxyId);
+          return {
+            response: { jsonrpc: "2.0", id: request.id, result: true },
+            outcome: "local",
+          };
+        }
+        const fresh = this.recentHeads.filter((h) => h.number > local.cursor);
+        fresh.sort((a, b) => a.number - b.number);
+        if (fresh.length > 0) local.cursor = fresh[fresh.length - 1]!.number;
+        return {
+          response: {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: fresh.map((h) => h.hash),
+          },
+          outcome: "local",
+        };
+      }
+    }
+
     const mapping = this.filters.lookup(proxyId);
     if (mapping === null) {
       // Mirrors node behaviour for unknown/expired filters.
@@ -528,6 +708,45 @@ export class ProxyHandler {
       this.filters.remove(proxyId);
     }
     return { response, outcome: "miss" };
+  }
+
+  /**
+   * Create a locally served block filter. The cursor starts at the current
+   * pool head: only heads observed after creation are reported, matching
+   * node behaviour. Idle filters expire after filters.stickyTtlMs, aligning
+   * with the node-side filter timeout.
+   */
+  private createLocalBlockFilter(
+    request: JsonRpcRequest,
+  ): { response: JsonRpcResponse; outcome: CacheOutcome } {
+    const now = Date.now();
+    for (const [id, f] of this.localBlockFilters) {
+      if (f.expiresAt <= now) this.localBlockFilters.delete(id);
+    }
+    const id = `0x${randomBytes(16).toString("hex")}`;
+    this.localBlockFilters.set(id, {
+      cursor: this.pool.chainHead ?? 0,
+      expiresAt: now + this.config.filters.stickyTtlMs,
+    });
+    return {
+      response: { jsonrpc: "2.0", id: request.id, result: id },
+      outcome: "local",
+    };
+  }
+
+  /** Resolve a local block filter; refreshes its idle expiry on hit. */
+  private lookupLocalBlockFilter(
+    id: string,
+  ): { cursor: number; expiresAt: number } | null {
+    const f = this.localBlockFilters.get(id);
+    if (f === undefined) return null;
+    const now = Date.now();
+    if (f.expiresAt <= now) {
+      this.localBlockFilters.delete(id);
+      return null;
+    }
+    f.expiresAt = now + this.config.filters.stickyTtlMs;
+    return f;
   }
 
   /**

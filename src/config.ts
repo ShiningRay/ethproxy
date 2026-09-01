@@ -19,6 +19,13 @@ const healthSchema = z.object({
   /** First retry delay; doubles per attempt, capped at retryMaxDelayMs. */
   retryBaseDelayMs: z.number().int().nonnegative().default(100),
   retryMaxDelayMs: z.number().int().nonnegative().default(1000),
+  /**
+   * Track chain heads via a persistent eth_subscribe("newHeads") WS
+   * connection per upstream (falls back to HTTP polling while WS is down).
+   * When false, heads come from the HTTP poll only and WS availability is
+   * detected by a per-poll probe instead.
+   */
+  wsHeads: z.boolean().default(true),
 });
 
 const cacheSchema = z.object({
@@ -73,6 +80,29 @@ const rateLimitSchema = z.object({
   maxSubscriptionsPerIp: z.number().int().positive().default(20),
 });
 
+const txpoolSchema = z.object({
+  /**
+   * Maintain a local pending-transaction mirror via upstream WS
+   * newPendingTransactions subscriptions, and answer client
+   * eth_subscribe("newPendingTransactions") locally from it.
+   * Requires the per-upstream persistent WS connection (shared with
+   * health.wsHeads). Default off: the mirror adds one upstream
+   * subscription per upstream and a high-traffic event stream.
+   */
+  mirror: z.boolean().default(false),
+});
+
+const syncingSchema = z.object({
+  /**
+   * Answer client eth_subscribe("syncing") locally from the pool's
+   * aggregated view: syncing (with a progress object) while ANY upstream
+   * is syncing, false once none are. Status comes from the per-upstream
+   * persistent WS syncing feed (shared with health.wsHeads) with the HTTP
+   * health poll as fallback. Default off.
+   */
+  mirror: z.boolean().default(false),
+});
+
 const filtersSchema = z.object({
   /**
    * Idle TTL for proxy-side filter id mappings (sticky routing). Aligned
@@ -119,6 +149,8 @@ const configSchema = z.object({
   security: securitySchema.default({}),
   rateLimit: rateLimitSchema.default({}),
   filters: filtersSchema.default({}),
+  txpool: txpoolSchema.default({}),
+  syncing: syncingSchema.default({}),
   cors: corsSchema.default({}),
 });
 
@@ -129,6 +161,8 @@ export type CacheConfig = z.infer<typeof cacheSchema>;
 export type SecurityConfig = z.infer<typeof securitySchema>;
 export type RateLimitConfig = z.infer<typeof rateLimitSchema>;
 export type FiltersConfig = z.infer<typeof filtersSchema>;
+export type TxpoolConfig = z.infer<typeof txpoolSchema>;
+export type SyncingConfig = z.infer<typeof syncingSchema>;
 export type CorsConfig = z.infer<typeof corsSchema>;
 
 export function loadConfig(path: string): Config {

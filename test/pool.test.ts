@@ -13,6 +13,7 @@ const health: HealthConfig = {
   maxRetries: 2,
   retryBaseDelayMs: 0,
   retryMaxDelayMs: 0,
+  wsHeads: true,
 };
 
 interface MockNode {
@@ -27,6 +28,15 @@ interface MockNode {
 }
 
 const servers: Server[] = [];
+const pools: UpstreamPool[] = [];
+
+async function waitFor(cond: () => boolean, timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor timeout");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
 
 async function startMockNode(initial: {
   syncing?: boolean;
@@ -83,6 +93,7 @@ async function startMockNode(initial: {
 }
 
 afterEach(async () => {
+  for (const p of pools.splice(0)) p.stop();
   await Promise.all(servers.splice(0).map((s) => new Promise<void>((r) => s.close(() => r()))));
 });
 
@@ -216,12 +227,13 @@ describe("UpstreamPool", () => {
     expect(pool.status().upstreams[0]?.chainId).toBe(1);
   });
 
-  it("probes websocket endpoints and selects WS-healthy nodes for forwarding", async () => {
+  it("tracks WS availability via the newHeads subscription and selects WS-healthy nodes for forwarding", async () => {
     const http = await startMockNode({});
 
     // No wsUrl configured: derived from the HTTP url, which is a plain HTTP
-    // port — the probe fails fast and the node is excluded from selectWs.
+    // port — the subscription fails fast and the node is excluded from selectWs.
     const noWs = new UpstreamPool([{ name: "a", url: http.url, weight: 1 }], health);
+    pools.push(noWs);
     await noWs.pollAll();
     expect(noWs.status().upstreams[0]?.wsHealthy).toBe(false);
     expect(noWs.selectWs(1)).toEqual([]);
@@ -241,13 +253,54 @@ describe("UpstreamPool", () => {
       [{ name: "b", url: http.url, wsUrl: `ws://127.0.0.1:${wsPort}`, weight: 1 }],
       health,
     );
+    pools.push(withWs);
     await withWs.pollAll();
     expect(withWs.status().upstreams[0]?.wsHealthy).toBe(true);
     expect(withWs.selectWs(1).map((u) => u.name)).toEqual(["b"]);
 
-    // WS endpoint dies -> next poll marks it down again.
+    // WS endpoint dies -> the persistent connection drops and marks it down;
+    // it stays down on the next poll because reconnects are refused.
+    for (const ws of wss.clients) ws.terminate();
     await new Promise<void>((r) => wss.close(() => r()));
+    await waitFor(() => withWs.status().upstreams[0]?.wsHealthy === false);
     await withWs.pollAll();
     expect(withWs.status().upstreams[0]?.wsHealthy).toBe(false);
+  });
+
+  it("aggregates syncing status: any syncing upstream makes the pool report syncing", async () => {
+    const synced = await startMockNode({});
+    const syncing = await startMockNode({ syncing: true });
+    const pool = new UpstreamPool(
+      [
+        { name: "synced", url: synced.url, weight: 1 },
+        { name: "syncing", url: syncing.url, weight: 1 },
+      ],
+      health,
+      undefined,
+      undefined,
+      { mirror: false },
+      { mirror: true },
+    );
+    pools.push(pool);
+    const statuses: unknown[] = [];
+    pool.onSyncingStatus((s) => statuses.push(s));
+    await pool.pollAll();
+    // One upstream is still syncing -> the aggregate is its progress object.
+    expect(statuses.at(-1)).toEqual({ startingBlock: "0x0" });
+
+    // Once it finishes, the aggregate flips to false.
+    syncing.set({ syncing: false });
+    await pool.pollAll();
+    expect(statuses.at(-1)).toBe(false);
+
+    // A dead upstream's last known status must not pin the aggregate:
+    // while it was syncing, killing it (and the other node reporting
+    // not-syncing) drops the pool back to false.
+    syncing.set({ syncing: true });
+    await pool.pollAll();
+    expect(statuses.at(-1)).toEqual({ startingBlock: "0x0" });
+    syncing.set({ fail: true });
+    await pool.pollAll();
+    expect(statuses.at(-1)).toBe(false);
   });
 });
