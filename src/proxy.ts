@@ -4,6 +4,7 @@ import type { Config } from "./config.js";
 import type { UpstreamPool } from "./pool.js";
 import {
   errorResponse,
+  formatRequestForLog,
   isJsonRpcRequest,
   type JsonRpcRequest,
   type JsonRpcResponse,
@@ -14,7 +15,26 @@ import { translateLatest } from "./translate.js";
 import { UpstreamTransportError } from "./upstream.js";
 
 export interface ProxyLogger {
+  info: (msg: string, ...args: unknown[]) => void;
   warn: (msg: string, ...args: unknown[]) => void;
+}
+
+type CacheOutcome = "hit" | "miss" | "local" | "error";
+
+interface RequestMetrics {
+  upstreamMs: number;
+  cacheSummary: string;
+}
+
+function formatCacheSummary(outcomes: CacheOutcome[]): string {
+  const counts = { hit: 0, miss: 0, local: 0, error: 0 };
+  for (const o of outcomes) counts[o] += 1;
+  const parts: string[] = [];
+  if (counts.hit) parts.push(`hit=${counts.hit}`);
+  if (counts.miss) parts.push(`miss=${counts.miss}`);
+  if (counts.local) parts.push(`local=${counts.local}`);
+  if (counts.error) parts.push(`error=${counts.error}`);
+  return parts.join(",") || "error";
 }
 
 /** Methods with side effects: never retried against a second upstream. */
@@ -66,7 +86,10 @@ export class ProxyHandler {
    * In-flight upstream fetches keyed by cache key (single-flight): concurrent
    * misses for the same key share one upstream request instead of stampeding.
    */
-  private readonly inflight = new Map<string, Promise<JsonRpcResponse>>();
+  private readonly inflight = new Map<
+    string,
+    Promise<{ response: JsonRpcResponse; upstreamMs: number }>
+  >();
 
   constructor(
     private readonly pool: UpstreamPool,
@@ -79,6 +102,7 @@ export class ProxyHandler {
     body: unknown,
   ): Promise<JsonRpcResponse | JsonRpcResponse[]> {
     const startedAt = performance.now();
+    const metrics: RequestMetrics = { upstreamMs: 0, cacheSummary: "error" };
     const method = Array.isArray(body)
       ? "batch"
       : isJsonRpcRequest(body)
@@ -88,25 +112,36 @@ export class ProxyHandler {
       rpcRequests.inc({ method, result });
       rpcDuration.observe({ method }, (performance.now() - startedAt) / 1000);
     };
+    const log = (): void => {
+      const totalMs = Math.round(performance.now() - startedAt);
+      const upstreamMs = Math.round(metrics.upstreamMs);
+      this.logger?.info(
+        `request: ${formatRequestForLog(body)} | cache=${metrics.cacheSummary} | upstreamMs=${upstreamMs} | totalMs=${totalMs}`,
+      );
+    };
 
     if (Array.isArray(body)) {
       if (body.length === 0) {
         record("error");
+        log();
         return errorResponse(null, -32600, "Invalid Request: empty batch");
       }
       if (body.length > this.config.security.maxBatchSize) {
         record("error");
+        log();
         return errorResponse(
           null,
           -32600,
           `batch size ${body.length} exceeds limit ${this.config.security.maxBatchSize}`,
         );
       }
-      const responses = await this.handleBatch(body);
+      const responses = await this.handleBatch(body, metrics);
+      log();
       record("ok");
       return responses;
     }
-    const response = await this.handleSingle(body);
+    const response = await this.handleSingle(body, metrics);
+    log();
     record(response.error === undefined ? "ok" : "error");
     return response;
   }
@@ -167,9 +202,13 @@ export class ProxyHandler {
     return { jsonrpc: "2.0", id, result: `0x${head.toString(16)}` };
   }
 
-  private async handleBatch(body: unknown[]): Promise<JsonRpcResponse[]> {
+  private async handleBatch(
+    body: unknown[],
+    metrics: RequestMetrics,
+  ): Promise<JsonRpcResponse[]> {
     const ctx = this.ruleCtx();
     const results: (JsonRpcResponse | null)[] = new Array(body.length).fill(null);
+    const caches: CacheOutcome[] = new Array(body.length).fill("error");
     const misses: {
       index: number;
       request: JsonRpcRequest;
@@ -183,18 +222,21 @@ export class ProxyHandler {
       body.map(async (item, index) => {
         if (!isJsonRpcRequest(item)) {
           results[index] = errorResponse(null, -32600, "Invalid Request");
+          caches[index] = "error";
           return;
         }
         const original = item;
         const rejection = this.guardRequest(original);
         if (rejection !== null) {
           results[index] = rejection;
+          caches[index] = "error";
           return;
         }
         if (original.method === "eth_blockNumber") {
           const local = this.localBlockNumber(original.id);
           if (local !== null) {
             results[index] = local;
+            caches[index] = "local";
             return;
           }
         }
@@ -203,6 +245,7 @@ export class ProxyHandler {
         const policy = this.policyFor(request.method, params, ctx);
         if (!policy.cacheable) {
           misses.push({ index, request, original, minBlock, key: null });
+          caches[index] = "miss";
           return;
         }
         const key = cacheKey(request.method, params);
@@ -213,9 +256,11 @@ export class ProxyHandler {
             id: request.id,
             result: JSON.parse(cached),
           };
+          caches[index] = "hit";
           return;
         }
         misses.push({ index, request, original, minBlock, key });
+        caches[index] = "miss";
       }),
     );
 
@@ -228,13 +273,14 @@ export class ProxyHandler {
       const minBlocks = plainMisses
         .map((m) => m.minBlock)
         .filter((b): b is number => b !== null);
-      const { responses } = await this.forwardBatch(
+      const { responses, upstreamMs } = await this.forwardBatch(
         plainMisses.map((m) => m.request),
         {
           minBlock: minBlocks.length > 0 ? Math.max(...minBlocks) : undefined,
           downgradeTo: plainMisses.map((m) => m.original),
         },
       );
+      metrics.upstreamMs += upstreamMs;
       const byId = new Map<string, JsonRpcResponse>();
       for (const r of responses) byId.set(JSON.stringify(r.id), r);
 
@@ -248,26 +294,39 @@ export class ProxyHandler {
 
     await Promise.all(
       cacheableMisses.map(async ({ index, request, original, minBlock, key }) => {
-        results[index] = await this.fetchAndStore(request, key!, ctx, {
+        const { response, upstreamMs } = await this.fetchAndStore(request, key!, ctx, {
           minBlock: minBlock ?? undefined,
           downgradeTo: original,
         });
+        results[index] = response;
+        metrics.upstreamMs += upstreamMs;
       }),
     );
 
+    metrics.cacheSummary = formatCacheSummary(caches);
     return results as JsonRpcResponse[];
   }
 
-  private async handleSingle(body: unknown): Promise<JsonRpcResponse> {
+  private async handleSingle(
+    body: unknown,
+    metrics: RequestMetrics,
+  ): Promise<JsonRpcResponse> {
     if (!isJsonRpcRequest(body)) {
+      metrics.cacheSummary = "error";
       return errorResponse(null, -32600, "Invalid Request");
     }
     const original = body;
     const rejection = this.guardRequest(original);
-    if (rejection !== null) return rejection;
+    if (rejection !== null) {
+      metrics.cacheSummary = "error";
+      return rejection;
+    }
     if (original.method === "eth_blockNumber") {
       const local = this.localBlockNumber(original.id);
-      if (local !== null) return local;
+      if (local !== null) {
+        metrics.cacheSummary = "local";
+        return local;
+      }
     }
     const { request, minBlock } = translateLatest(original, this.pool.chainHead);
     const params = Array.isArray(request.params) ? request.params : [];
@@ -278,18 +337,24 @@ export class ProxyHandler {
       const key = cacheKey(request.method, params);
       const cached = await this.cache.get(key);
       if (cached !== null) {
+        metrics.cacheSummary = "hit";
         return { jsonrpc: "2.0", id: request.id, result: JSON.parse(cached) };
       }
-      return this.fetchAndStore(request, key, ctx, {
+      const { response, upstreamMs } = await this.fetchAndStore(request, key, ctx, {
         minBlock: minBlock ?? undefined,
         downgradeTo: original,
       });
+      metrics.upstreamMs += upstreamMs;
+      metrics.cacheSummary = "miss";
+      return response;
     }
 
-    const { responses } = await this.forwardBatch([request], {
+    const { responses, upstreamMs } = await this.forwardBatch([request], {
       minBlock: minBlock ?? undefined,
       downgradeTo: [original],
     });
+    metrics.upstreamMs += upstreamMs;
+    metrics.cacheSummary = "miss";
     return responses[0] ?? errorResponse(request.id, -32003, "upstream error");
   }
 
@@ -304,31 +369,40 @@ export class ProxyHandler {
     key: string,
     ctx: CacheRuleContext,
     opts: { minBlock?: number; downgradeTo?: JsonRpcRequest } = {},
-  ): Promise<JsonRpcResponse> {
+  ): Promise<{ response: JsonRpcResponse; upstreamMs: number }> {
     let pending = this.inflight.get(key);
     if (pending === undefined) {
       pending = (async () => {
-        const { responses, downgraded } = await this.forwardBatch([request], {
-          minBlock: opts.minBlock,
-          downgradeTo: opts.downgradeTo ? [opts.downgradeTo] : undefined,
-        });
+        const { responses, downgraded, upstreamMs } = await this.forwardBatch(
+          [request],
+          {
+            minBlock: opts.minBlock,
+            downgradeTo: opts.downgradeTo ? [opts.downgradeTo] : undefined,
+          },
+        );
         const response = responses[0];
         if (!response) {
-          return errorResponse(request.id, -32003, "upstream error");
+          return {
+            response: errorResponse(request.id, -32003, "upstream error"),
+            upstreamMs,
+          };
         }
         // A downgraded response came from a node without the target block;
         // it is not the data the cache key promises, so never store it.
         if (!downgraded && response.error === undefined) {
           await this.storeResult(request, response, key, ctx);
         }
-        return response;
+        return { response, upstreamMs };
       })();
       this.inflight.set(key, pending);
       void pending.finally(() => {
         if (this.inflight.get(key) === pending) this.inflight.delete(key);
       });
     }
-    return pending.then((response) => ({ ...response, id: request.id }));
+    return pending.then(({ response, upstreamMs }) => ({
+      response: { ...response, id: request.id },
+      upstreamMs,
+    }));
   }
 
   /**
@@ -345,11 +419,12 @@ export class ProxyHandler {
   private async forwardBatch(
     requests: JsonRpcRequest[],
     opts: { minBlock?: number; downgradeTo?: JsonRpcRequest[] } = {},
-  ): Promise<{ responses: JsonRpcResponse[]; downgraded: boolean }> {
+  ): Promise<{ responses: JsonRpcResponse[]; downgraded: boolean; upstreamMs: number }> {
     const noRetry = requests.some((r) => NO_RETRY_METHODS.has(r.method));
     const attempts = noRetry ? 1 : this.config.health.maxRetries;
     let picks = this.pool.select(attempts, opts.minBlock);
     let downgraded = false;
+    let upstreamMs = 0;
 
     if (picks.length === 0 && opts.minBlock !== undefined) {
       picks = this.pool.select(attempts);
@@ -362,6 +437,7 @@ export class ProxyHandler {
           errorResponse(r.id, -32002, "no healthy upstream available"),
         ),
         downgraded,
+        upstreamMs,
       };
     }
 
@@ -372,12 +448,14 @@ export class ProxyHandler {
         await sleep(retryDelayMs(attemptIndex, this.config.health));
       }
       try {
+        const callStart = performance.now();
         const body = await upstream.call(payload);
+        upstreamMs += performance.now() - callStart;
         upstreamRequests.inc({ upstream: upstream.name, result: "ok" });
         const responses = Array.isArray(body) ? body : [body];
         // A legal JSON-RPC error from the upstream is a definitive answer,
         // not a reason to fail over.
-        return { responses, downgraded };
+        return { responses, downgraded, upstreamMs };
       } catch (err) {
         if (err instanceof UpstreamTransportError) {
           upstreamRequests.inc({ upstream: upstream.name, result: "error" });
@@ -396,6 +474,7 @@ export class ProxyHandler {
         errorResponse(r.id, -32003, "all upstreams failed"),
       ),
       downgraded,
+      upstreamMs,
     };
   }
 

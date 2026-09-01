@@ -4,6 +4,7 @@ import type { ProxyHandler } from "./proxy.js";
 import type { RateLimiter } from "./ratelimit.js";
 import {
   errorResponse,
+  formatRequestForLog,
   isJsonRpcRequest,
   type JsonRpcId,
   type JsonRpcRequest,
@@ -11,6 +12,7 @@ import {
 import { upstreamWsUrl } from "./upstream.js";
 
 export interface WsLogger {
+  info: (msg: string, ...args: unknown[]) => void;
   warn: (msg: string, ...args: unknown[]) => void;
 }
 
@@ -170,6 +172,7 @@ class WsClientSession {
   }
 
   private forwardSubscription(request: JsonRpcRequest): void {
+    this.logger?.info(`ws subscription: ${formatRequestForLog(request)}`);
     // Enforce the per-IP subscription cap before pinning upstream resources.
     if (
       request.method === "eth_subscribe" &&
