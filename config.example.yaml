@@ -44,6 +44,9 @@ rateLimit:
   wsBurst: 40
   maxSubscriptionsPerIp: 20 # 同一 IP 的并发 eth_subscribe 订阅数上限（跨连接合计）
 
+filters:
+  stickyTtlMs: 300000       # 代理侧 filter ID 映射的空闲 TTL（粘滞路由）；每次轮询刷新，对齐 geth 默认 5 分钟的 filter 过期
+
 cors:
   enabled: true             # 跨域支持（浏览器 DApp 需要）
   origin: "*"               # "*" 允许任意域；多个域用逗号分隔，如 "https://a.com, https://b.com"

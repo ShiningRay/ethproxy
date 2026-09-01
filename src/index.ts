@@ -1,5 +1,6 @@
 import { createCacheBackend, ResponseCache } from "./cache/index.js";
 import { loadConfig } from "./config.js";
+import { StickyFilterRouter } from "./filters.js";
 import { UpstreamPool } from "./pool.js";
 import { ProxyHandler } from "./proxy.js";
 import { buildServer } from "./server.js";
@@ -17,7 +18,8 @@ async function main(): Promise<void> {
   pool.start();
 
   const cache = new ResponseCache(createCacheBackend(config.cache), console);
-  const proxy = new ProxyHandler(pool, cache, config, console);
+  const filters = new StickyFilterRouter(config.filters.stickyTtlMs);
+  const proxy = new ProxyHandler(pool, cache, config, filters, console);
   const app = await buildServer(proxy, pool, config);
 
   const shutdown = async (): Promise<void> => {

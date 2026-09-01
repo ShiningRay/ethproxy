@@ -57,6 +57,7 @@ function baseConfig(upstream: {
       wsBurst: 40,
       maxSubscriptionsPerIp: 20,
     },
+    filters: { stickyTtlMs: 300000 },
     cors: { enabled: true, origin: "*" },
   };
 }

@@ -1,6 +1,12 @@
 import { cacheKey, ResponseCache, type CacheStats } from "./cache/index.js";
 import { requestPolicy, responseTtl, type CacheRuleContext, type RequestPolicy } from "./cache-rules.js";
 import type { Config } from "./config.js";
+import {
+  FILTER_CREATE_METHODS,
+  FILTER_UNINSTALL_METHOD,
+  isFilterMethod,
+  StickyFilterRouter,
+} from "./filters.js";
 import type { UpstreamPool } from "./pool.js";
 import {
   errorResponse,
@@ -12,7 +18,7 @@ import {
 import { isMethodBlocked, logsRangeViolation } from "./security.js";
 import { rpcDuration, rpcRequests, upstreamRequests } from "./metrics.js";
 import { translateLatest } from "./translate.js";
-import { UpstreamTransportError } from "./upstream.js";
+import { Upstream, UpstreamTransportError } from "./upstream.js";
 
 export interface ProxyLogger {
   info: (msg: string, ...args: unknown[]) => void;
@@ -95,6 +101,9 @@ export class ProxyHandler {
     private readonly pool: UpstreamPool,
     private readonly cache: ResponseCache,
     private readonly config: Config,
+    private readonly filters: StickyFilterRouter = new StickyFilterRouter(
+      config.filters.stickyTtlMs,
+    ),
     private readonly logger?: ProxyLogger,
   ) {}
 
@@ -240,6 +249,14 @@ export class ProxyHandler {
             return;
           }
         }
+        // Filter calls route per-item (possibly to a pinned upstream), so they
+        // never join the shared batch forwarding path.
+        if (isFilterMethod(original.method)) {
+          const { response, outcome } = await this.handleFilterCall(original, metrics);
+          results[index] = response;
+          caches[index] = outcome;
+          return;
+        }
         const { request, minBlock } = translateLatest(original, this.pool.chainHead);
         const params = Array.isArray(request.params) ? request.params : [];
         const policy = this.policyFor(request.method, params, ctx);
@@ -328,6 +345,11 @@ export class ProxyHandler {
         return local;
       }
     }
+    if (isFilterMethod(original.method)) {
+      const { response, outcome } = await this.handleFilterCall(original, metrics);
+      metrics.cacheSummary = outcome;
+      return response;
+    }
     const { request, minBlock } = translateLatest(original, this.pool.chainHead);
     const params = Array.isArray(request.params) ? request.params : [];
     const ctx = this.ruleCtx();
@@ -406,6 +428,80 @@ export class ProxyHandler {
   }
 
   /**
+   * Handle one filter call with sticky routing.
+   *
+   * Filter state lives in a single node's memory and ids are node-local, so:
+   * - creation is forwarded through the normal pool; the node-local id in the
+   *   response is replaced by a proxy-issued id recorded in the sticky table;
+   * - polling / uninstall rewrite params[0] back to the node-local id and are
+   *   pinned to the upstream that owns the filter — failover to another node
+   *   is pointless, the filter does not exist there.
+   */
+  private async handleFilterCall(
+    request: JsonRpcRequest,
+    metrics: RequestMetrics,
+  ): Promise<{ response: JsonRpcResponse; outcome: CacheOutcome }> {
+    if (FILTER_CREATE_METHODS.has(request.method)) {
+      const { responses, upstreamMs, upstreamName } = await this.forwardBatch([
+        request,
+      ]);
+      metrics.upstreamMs += upstreamMs;
+      const response =
+        responses[0] ?? errorResponse(request.id, -32003, "upstream error");
+      if (
+        response.error === undefined &&
+        typeof response.result === "string" &&
+        upstreamName !== undefined
+      ) {
+        const proxyId = this.filters.register(upstreamName, response.result);
+        return { response: { ...response, result: proxyId }, outcome: "miss" };
+      }
+      return { response, outcome: "miss" };
+    }
+
+    const params = Array.isArray(request.params) ? request.params : [];
+    const proxyId = typeof params[0] === "string" ? params[0] : "";
+    const mapping = this.filters.lookup(proxyId);
+    if (mapping === null) {
+      // Mirrors node behaviour for unknown/expired filters.
+      if (request.method === FILTER_UNINSTALL_METHOD) {
+        return {
+          response: { jsonrpc: "2.0", id: request.id, result: false },
+          outcome: "local",
+        };
+      }
+      return {
+        response: errorResponse(request.id, -32000, "filter not found"),
+        outcome: "local",
+      };
+    }
+
+    const pinned = this.pool.byName(mapping.upstreamName);
+    if (pinned === undefined) {
+      this.filters.remove(proxyId);
+      return {
+        response: errorResponse(request.id, -32000, "filter not found"),
+        outcome: "local",
+      };
+    }
+
+    const rewritten = { ...request, params: [mapping.nodeId, ...params.slice(1)] };
+    const { responses, upstreamMs } = await this.forwardBatch([rewritten], {
+      pinned,
+    });
+    metrics.upstreamMs += upstreamMs;
+    const response =
+      responses[0] ?? errorResponse(request.id, -32003, "upstream error");
+    if (
+      request.method === FILTER_UNINSTALL_METHOD &&
+      response.error === undefined
+    ) {
+      this.filters.remove(proxyId);
+    }
+    return { response, outcome: "miss" };
+  }
+
+  /**
    * Forward a batch of requests to the pool, retrying on a different
    * upstream on transport-level failures only. Never retried when the batch
    * contains a side-effecting method (eth_sendRawTransaction etc.).
@@ -415,14 +511,30 @@ export class ProxyHandler {
    * the downgradeTo requests (with the original "latest" tags) are sent
    * instead — slightly stale data beats an error. downgraded tells callers
    * not to cache the response.
+   *
+   * With pinned set, the request goes to exactly that upstream in a single
+   * attempt regardless of its health flags (used by sticky filter routing:
+   * the filter state exists on that node alone). upstreamName reports which
+   * upstream actually answered.
    */
   private async forwardBatch(
     requests: JsonRpcRequest[],
-    opts: { minBlock?: number; downgradeTo?: JsonRpcRequest[] } = {},
-  ): Promise<{ responses: JsonRpcResponse[]; downgraded: boolean; upstreamMs: number }> {
+    opts: {
+      minBlock?: number;
+      downgradeTo?: JsonRpcRequest[];
+      pinned?: Upstream;
+    } = {},
+  ): Promise<{
+    responses: JsonRpcResponse[];
+    downgraded: boolean;
+    upstreamMs: number;
+    upstreamName?: string;
+  }> {
     const noRetry = requests.some((r) => NO_RETRY_METHODS.has(r.method));
-    const attempts = noRetry ? 1 : this.config.health.maxRetries;
-    let picks = this.pool.select(attempts, opts.minBlock);
+    const attempts = noRetry || opts.pinned ? 1 : this.config.health.maxRetries;
+    let picks = opts.pinned
+      ? [opts.pinned]
+      : this.pool.select(attempts, opts.minBlock);
     let downgraded = false;
     let upstreamMs = 0;
 
@@ -455,7 +567,7 @@ export class ProxyHandler {
         const responses = Array.isArray(body) ? body : [body];
         // A legal JSON-RPC error from the upstream is a definitive answer,
         // not a reason to fail over.
-        return { responses, downgraded, upstreamMs };
+        return { responses, downgraded, upstreamMs, upstreamName: upstream.name };
       } catch (err) {
         if (err instanceof UpstreamTransportError) {
           upstreamRequests.inc({ upstream: upstream.name, result: "error" });

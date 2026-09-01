@@ -16,6 +16,7 @@ Ethereum JSON-RPC 反向代理：多上游负载均衡与故障转移、同步�
 - **latest 一致性**：`latest` 标签（含参数缺省的隐含 latest）在进入缓存/转发前翻译为本地观测的池链高 H——同一轮询窗口内所有客户端读到一致的数据，缓存键稳定为 `(method, H)`；翻译后的请求只路由到 `blockNumber >= H` 的节点，无节点满足时回退为原始 `latest` 请求且结果不缓存；`eth_blockNumber` 直接由本地链高应答，不打上游
 - **可插拔缓存后端**：内存 LRU（默认）或 Redis；实现 `CacheBackend` 接口即可扩展
 - **批量请求**：数组请求逐项走缓存管线，未命中项按缓存性分流（可缓存项走 single-flight，其余合并为单次批量转发）
+- **Filter 粘滞路由**：`eth_newFilter`/`eth_newBlockFilter`/`eth_newPendingTransactionFilter` 的响应会被改写为代理生成的全局唯一 ID（节点本地 ID 跨节点会冲突）；`eth_getFilterChanges`/`eth_getFilterLogs`/`eth_uninstallFilter` 换回节点本地 ID 并固定路由到创建它的上游。映射空闲超过 `filters.stickyTtlMs`（默认 5 分钟，对齐 geth 的 filter 过期）即失效，每次轮询会刷新
 - **Single-flight 防拥堵**：同一缓存键的并发未命中只发一次上游请求，其余请求共享该结果，避免短 TTL 过期瞬间的惊群效应
 - **公网加固**：默认拒绝 `admin_*`/`debug_*`/`personal_*` 等命名空间；限制批量请求大小、请求体大小和 `eth_getLogs` 区块跨度
 - **WebSocket 分流处理**：普通 JSON-RPC 请求走与 HTTP 相同的代理管线（缓存、负载均衡、重试全部生效）；`eth_subscribe`/`eth_unsubscribe` 通过该客户端专属的上游 WS 长连接透传（订阅状态在节点上），订阅通知原样回推；上游订阅连接断开则关闭客户端连接，由客户端重连重订阅

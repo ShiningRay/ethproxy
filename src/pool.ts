@@ -245,6 +245,11 @@ export class UpstreamPool {
     return this.eligible().length > 0;
   }
 
+  /** Find an upstream by name, regardless of health (sticky filter routing). */
+  byName(name: string): Upstream | undefined {
+    return this.upstreams.find((u) => u.name === name);
+  }
+
   /**
    * Weighted round-robin over eligible upstreams. Returns up to `count`
    * distinct upstreams in attempt order (for failover retries).

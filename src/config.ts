@@ -73,6 +73,15 @@ const rateLimitSchema = z.object({
   maxSubscriptionsPerIp: z.number().int().positive().default(20),
 });
 
+const filtersSchema = z.object({
+  /**
+   * Idle TTL for proxy-side filter id mappings (sticky routing). Aligned
+   * with the node-side filter timeout (geth deletes filters not polled
+   * for ~5 minutes); each poll refreshes the deadline.
+   */
+  stickyTtlMs: z.number().int().positive().default(300000),
+});
+
 const corsSchema = z.object({
   enabled: z.boolean().default(true),
   /** "*" allows any origin; otherwise a comma-separated list of origins. */
@@ -109,6 +118,7 @@ const configSchema = z.object({
   cache: cacheSchema.default({}),
   security: securitySchema.default({}),
   rateLimit: rateLimitSchema.default({}),
+  filters: filtersSchema.default({}),
   cors: corsSchema.default({}),
 });
 
@@ -118,6 +128,7 @@ export type HealthConfig = z.infer<typeof healthSchema>;
 export type CacheConfig = z.infer<typeof cacheSchema>;
 export type SecurityConfig = z.infer<typeof securitySchema>;
 export type RateLimitConfig = z.infer<typeof rateLimitSchema>;
+export type FiltersConfig = z.infer<typeof filtersSchema>;
 export type CorsConfig = z.infer<typeof corsSchema>;
 
 export function loadConfig(path: string): Config {
