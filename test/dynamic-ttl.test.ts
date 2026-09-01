@@ -11,6 +11,7 @@ const health: HealthConfig = {
   maxRetries: 2,
   retryBaseDelayMs: 0,
   retryMaxDelayMs: 0,
+  wsHeads: true,
 };
 
 describe("UpstreamPool block-time estimation", () => {

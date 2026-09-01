@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import WebSocket from "ws";
 import type { UpstreamPool } from "./pool.js";
 import type { ProxyHandler } from "./proxy.js";
@@ -59,10 +60,19 @@ const SUBSCRIPTION_METHODS = new Set(["eth_subscribe", "eth_unsubscribe"]);
  * - Regular JSON-RPC calls (eth_call, eth_blockNumber, …) are routed through
  *   the HTTP proxy pipeline: caching, weighted load balancing and retries
  *   apply exactly as for HTTP clients.
- * - eth_subscribe / eth_unsubscribe are forwarded over a dedicated upstream
- *   WS connection pinned to this client (subscription state lives on the
- *   node). Subscription ids are assigned by the upstream and passed through
- *   unchanged, so eth_subscription notifications can be relayed directly.
+ * - eth_subscribe("newHeads") is served locally when the pool tracks heads
+ *   via its own upstream subscriptions (health.wsHeads): the proxy issues
+ *   the subscription id and fans out every observed head, so N clients no
+ *   longer pin N upstream WS connections. Same for
+ *   eth_subscribe("newPendingTransactions") when the pending-tx mirror is
+ *   enabled (txpool.mirror), and for eth_subscribe("syncing") when the
+ *   syncing mirror is enabled (syncing.mirror) — the current status is
+ *   answered immediately on subscribe, then only changes are fanned out.
+ * - Other eth_subscribe / eth_unsubscribe calls are forwarded over a
+ *   dedicated upstream WS connection pinned to this client (subscription
+ *   state lives on the node). Subscription ids are assigned by the upstream
+ *   and passed through unchanged, so eth_subscription notifications can be
+ *   relayed directly.
  * - If the pinned upstream connection dies, the client connection is closed;
  *   the client is expected to reconnect and re-subscribe.
  */
@@ -75,6 +85,8 @@ class WsClientSession {
   >();
   /** Subscription ids issued by the upstream on subConn. */
   private readonly knownSubIds = new Set<string>();
+  /** Locally served subscriptions (newHeads / pending txs): subId -> unsubscribe fn. */
+  private readonly localSubs = new Map<string, () => void>();
   private nextUpstreamId = 1;
 
   constructor(
@@ -146,6 +158,32 @@ class WsClientSession {
     this.send(await this.proxy.handle(parsed));
   }
 
+  /**
+   * Serve a subscription locally: issue a proxy-side id, answer the client,
+   * then register the feed listener. `register` wires emit() to a pool feed
+   * and returns the unsubscribe function. The response goes out first so a
+   * feed that emits immediately on registration (syncing's current status)
+   * still arrives after the subscription id, as a node would send it.
+   */
+  private localSubscribe(
+    request: JsonRpcRequest,
+    register: (emit: (result: unknown) => void) => () => void,
+  ): void {
+    const subId = `0x${randomBytes(16).toString("hex")}`;
+    this.send({ jsonrpc: "2.0", id: request.id, result: subId });
+    const unsubscribe = register((result) => {
+      this.send({
+        jsonrpc: "2.0",
+        method: "eth_subscription",
+        params: { subscription: subId, result },
+      });
+    });
+    this.localSubs.set(subId, unsubscribe);
+    if (this.rateLimit !== undefined) {
+      this.subscriptions?.add(this.rateLimit.clientIp, subId);
+    }
+  }
+
   /** Lazily open the pinned upstream WS connection for subscriptions. */
   private ensureSubConn(): WebSocket | null {
     if (this.subConn && this.subConn.readyState === WebSocket.OPEN) {
@@ -182,6 +220,49 @@ class WsClientSession {
       this.subscriptions.count(this.rateLimit.clientIp) >= this.maxSubscriptionsPerIp
     ) {
       this.send(errorResponse(request.id, -32005, "subscription limit exceeded"));
+      return;
+    }
+
+    // Locally served feeds: the pool already observes them via its own
+    // upstream subscriptions, so fan out instead of pinning an upstream
+    // connection per client.
+    if (request.method === "eth_subscribe" && Array.isArray(request.params)) {
+      if (request.params[0] === "newHeads" && this.pool.localHeadsEnabled) {
+        this.localSubscribe(request, (emit) =>
+          this.pool.onNewHead((head) => emit(head)),
+        );
+        return;
+      }
+      if (
+        request.params[0] === "newPendingTransactions" &&
+        this.pool.pendingTxMirrorEnabled
+      ) {
+        this.localSubscribe(request, (emit) =>
+          this.pool.onPendingTx((hash) => emit(hash)),
+        );
+        return;
+      }
+      if (request.params[0] === "syncing" && this.pool.syncingMirrorEnabled) {
+        this.localSubscribe(request, (emit) =>
+          this.pool.onSyncingStatus((status) => emit(status)),
+        );
+        return;
+      }
+    }
+
+    if (
+      request.method === "eth_unsubscribe" &&
+      Array.isArray(request.params) &&
+      typeof request.params[0] === "string" &&
+      this.localSubs.has(request.params[0])
+    ) {
+      const subId = request.params[0];
+      this.localSubs.get(subId)!();
+      this.localSubs.delete(subId);
+      if (this.rateLimit !== undefined) {
+        this.subscriptions?.remove(this.rateLimit.clientIp, subId);
+      }
+      this.send({ jsonrpc: "2.0", id: request.id, result: true });
       return;
     }
 
@@ -256,8 +337,14 @@ class WsClientSession {
   private cleanup(): void {
     if (this.rateLimit !== undefined) {
       this.subscriptions?.removeAll(this.rateLimit.clientIp, this.knownSubIds);
+      this.subscriptions?.removeAll(
+        this.rateLimit.clientIp,
+        this.localSubs.keys(),
+      );
     }
     this.knownSubIds.clear();
+    for (const unsubscribe of this.localSubs.values()) unsubscribe();
+    this.localSubs.clear();
     this.subConn?.close();
     this.subConn = null;
   }
