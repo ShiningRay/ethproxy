@@ -23,6 +23,7 @@ const health: HealthConfig = {
   retryBaseDelayMs: 0,
   retryMaxDelayMs: 0,
   wsHeads: true,
+  wsPingIntervalMs: 30000,
 };
 
 async function waitFor(cond: () => boolean, timeoutMs = 3000): Promise<void> {

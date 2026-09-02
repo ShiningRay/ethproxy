@@ -61,6 +61,7 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `health.maxRetries` | 单请求最多尝试几个上游 | 2 |
 | `health.retryBaseDelayMs` / `retryMaxDelayMs` | 重试指数退避：`base * 2^(n-1)`，封顶 max | 100 / 1000 |
 | `health.wsHeads` | 通过持久的 `eth_subscribe("newHeads")` WS 连接跟踪链高（WS 断开时回退 HTTP 轮询）；`false` = 仅 HTTP 轮询 + 每轮探测 WS 可用性 | true |
+| `health.wsPingIntervalMs` | 上游 WS 连接的客户端保活 ping 间隔；连续两个间隔无 pong 判定死链并断开重连。防止服务商网关空闲断连（close 1006）；`0` 关闭 | 30000 |
 | `reorg.enabled` / `reorg.windowSize` | 基于上游 newHeads 的重组检测：校验 parentHash 与滑动区块头窗口的连续性，跨上游仲裁（冲突分支被后续块接续或被第二个上游证实才判定）；确认的重组记录日志、计入指标（`ethproxy_reorgs_detected_total`、`ethproxy_reorg_depth`）并经 `pool.onReorg` 广播。依赖 `health.wsHeads` | true / 128 |
 | `filters.stickyTtlMs` | filter 粘滞路由映射的空闲 TTL，每次轮询刷新 | 300000 |
 | `txpool.mirror` | 本地 pending 交易镜像：池为每个 WS 可用的上游维持 `eth_subscribe("newPendingTransactions")` 订阅，客户端订阅改由代理本地应答（哈希去重后扇出）；`false` = 透传上游 | false |

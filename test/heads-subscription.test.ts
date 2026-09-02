@@ -22,6 +22,7 @@ const health: HealthConfig = {
   retryBaseDelayMs: 0,
   retryMaxDelayMs: 0,
   wsHeads: true,
+  wsPingIntervalMs: 30000,
 };
 
 async function waitFor(cond: () => boolean, timeoutMs = 3000): Promise<void> {
@@ -195,6 +196,24 @@ describe("newHeads subscription", () => {
     http.setBlock(1007);
     await pool.pollAll();
     expect(pool.chainHead).toBe(1007);
+  });
+
+  it("keeps the connection alive with client-side ping enabled", async () => {
+    const http = await startHttpMock(1000);
+    const ws = await startWsMock();
+    const pool = new UpstreamPool(
+      [{ name: "a", url: http.url, wsUrl: ws.url, weight: 1 }],
+      { ...health, wsPingIntervalMs: 50 },
+    );
+    cleanups.push(async () => pool.stop());
+
+    await pool.pollAll();
+    await waitFor(() => ws.socketCount() === 1);
+    // Stay connected well beyond several ping intervals (the mock pongs).
+    await new Promise((r) => setTimeout(r, 300));
+    expect(pool.status().upstreams[0]!.wsHealthy).toBe(true);
+    ws.pushHead(1009);
+    await waitFor(() => pool.chainHead === 1009);
   });
 
   it("does not subscribe when wsHeads is disabled; heads come from HTTP only", async () => {

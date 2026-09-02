@@ -61,6 +61,7 @@ See [config.example.yaml](config.example.yaml). Key options:
 | `health.maxRetries` | Upstreams tried per request | 2 |
 | `health.retryBaseDelayMs` / `retryMaxDelayMs` | Exponential retry backoff: `base * 2^(n-1)`, capped at max | 100 / 1000 |
 | `health.wsHeads` | Track chain heads via a persistent `eth_subscribe("newHeads")` WS connection per upstream (HTTP poll fallback while WS is down); `false` = HTTP-only heads + per-poll WS probe | true |
+| `health.wsPingIntervalMs` | Client-side keepalive ping interval on the upstream WS connection; no pong for two intervals = dead link, terminate and reconnect. Guards against provider gateways idle-dropping silent connections (close 1006); `0` disables | 30000 |
 | `reorg.enabled` / `reorg.windowSize` | Reorg detection from upstream newHeads: parentHash continuity against a sliding header window, arbitrated across upstreams (a conflict confirms only when the chain builds on it or a second upstream reports it); confirmed reorgs are logged, counted (`ethproxy_reorgs_detected_total`, `ethproxy_reorg_depth`) and fanned out via `pool.onReorg`. Requires `health.wsHeads` | true / 128 |
 | `filters.stickyTtlMs` | Idle TTL for sticky filter-id mappings; refreshed on every poll | 300000 |
 | `txpool.mirror` | Mirror pending transactions: the pool keeps an `eth_subscribe("newPendingTransactions")` feed per WS-capable upstream and serves client subscriptions locally (deduped hashes); `false` = pass through | false |

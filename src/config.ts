@@ -26,6 +26,13 @@ const healthSchema = z.object({
    * detected by a per-poll probe instead.
    */
   wsHeads: z.boolean().default(true),
+  /**
+   * Client-side WS keepalive interval for the persistent per-upstream
+   * connection: ping every this many ms, terminate + reconnect when no pong
+   * arrives for two intervals. Protects against provider gateways that
+   * idle-drop silent connections (close code 1006). 0 disables.
+   */
+  wsPingIntervalMs: z.number().int().nonnegative().default(30000),
 });
 
 const cacheSchema = z.object({

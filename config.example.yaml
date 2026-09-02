@@ -30,6 +30,8 @@ health:
   retryMaxDelayMs: 1000     # 重试退避上限
   wsHeads: true             # 通过持久的 eth_subscribe("newHeads") WS 连接跟踪链高（WS 断开时自动回退 HTTP 轮询）；
                             # false 时块高仅来自 HTTP 轮询，WS 可用性改为每轮探测
+  wsPingIntervalMs: 30000   # 上游 WS 连接的客户端保活：每隔该毫秒数发 ping，连续两个间隔收不到 pong 则判定死链
+                            # 主动断开重连。防止服务商网关空闲断连（close 1006）；0 关闭
 
 security:
   # 直接拒绝的 RPC 命名空间（公网入口加固）

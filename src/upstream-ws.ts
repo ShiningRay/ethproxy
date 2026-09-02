@@ -45,6 +45,14 @@ export class UpstreamWsConnection {
     private readonly subscriptions: UpstreamWsSubscriptions,
     private readonly callbacks: UpstreamWsCallbacks,
     private readonly timeoutMs: number,
+    /**
+     * Client-side keepalive: send a WS ping every this many ms, and treat
+     * the connection as dead (terminate + reconnect) when no pong arrives
+     * for two intervals. Many providers' gateways idle-drop silent
+     * connections (close code 1006); the ping keeps them alive, and the
+     * watchdog detects half-open sockets that never emit a close frame.
+     */
+    private readonly pingIntervalMs: number = 30000,
   ) {}
 
   /** Connect unless a socket is already live or connecting. */
@@ -89,6 +97,16 @@ export class UpstreamWsConnection {
       let answered = 0;
       let confirmed = 0;
 
+      // Keepalive state for this connection's lifetime.
+      let lastPongAt = 0;
+      let pingTimer: NodeJS.Timeout | null = null;
+      const stopPing = (): void => {
+        if (pingTimer !== null) {
+          clearInterval(pingTimer);
+          pingTimer = null;
+        }
+      };
+
       ws.on("open", () => {
         kinds.forEach((kind, i) => {
           pendingByReqId.set(i + 1, kind);
@@ -101,6 +119,21 @@ export class UpstreamWsConnection {
             }),
           );
         });
+        if (this.pingIntervalMs > 0) {
+          lastPongAt = Date.now();
+          pingTimer = setInterval(() => {
+            if (Date.now() - lastPongAt > 2 * this.pingIntervalMs) {
+              // Half-open or dead connection: force teardown + reconnect.
+              ws.terminate();
+              return;
+            }
+            ws.ping();
+          }, this.pingIntervalMs);
+          pingTimer.unref();
+        }
+      });
+      ws.on("pong", () => {
+        lastPongAt = Date.now();
       });
 
       ws.on("message", (data) => {
@@ -168,6 +201,7 @@ export class UpstreamWsConnection {
       });
 
       const onDown = (code?: number, reason?: Buffer): void => {
+        stopPing();
         if (this.ws === ws) {
           this.ws = null;
           this.ready = null;
