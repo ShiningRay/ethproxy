@@ -14,6 +14,7 @@ const health: HealthConfig = {
   retryBaseDelayMs: 0,
   retryMaxDelayMs: 0,
   wsHeads: true,
+  wsPingIntervalMs: 30000,
 };
 
 interface MockNode {

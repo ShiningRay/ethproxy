@@ -275,6 +275,7 @@ export class UpstreamPool {
                 },
               },
               Math.min(health.requestTimeoutMs, 5000),
+              health.wsPingIntervalMs,
             ),
           ])
         : [],

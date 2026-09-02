@@ -93,6 +93,7 @@ async function makeProxy(nodes: MockNode[], stickyTtlMs = 300000) {
       retryBaseDelayMs: 0,
       retryMaxDelayMs: 0,
       wsHeads: true,
+      wsPingIntervalMs: 30000,
     },
     cache: {
       enabled: true,

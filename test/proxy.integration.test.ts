@@ -113,6 +113,7 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
       retryBaseDelayMs: 0,
       retryMaxDelayMs: 0,
       wsHeads: true,
+      wsPingIntervalMs: 30000,
     },
     cache: {
       enabled: true,
