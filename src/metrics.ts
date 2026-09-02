@@ -100,6 +100,13 @@ const cacheErrors = new Gauge({
   registers: [registry],
 });
 
+const localResponses = new Gauge({
+  name: "ethproxy_local_responses_total",
+  help: "Responses served from local data without an upstream call, by kind (cacheHit, blockNumber, filters)",
+  labelNames: ["kind"],
+  registers: [registry],
+});
+
 let bound: { pool: UpstreamPool; proxy: ProxyHandler } | null = null;
 
 /** Point the dynamic gauges at the running pool/proxy (called by buildServer). */
@@ -125,6 +132,10 @@ function refreshGauges(): void {
   cacheMisses.set(stats.misses);
   cacheStores.set(stats.sets);
   cacheErrors.set(stats.errors);
+  const local = bound.proxy.localStats();
+  localResponses.set({ kind: "cacheHit" }, local.cacheHits);
+  localResponses.set({ kind: "blockNumber" }, local.blockNumber);
+  localResponses.set({ kind: "filters" }, local.filters);
 }
 
 /** Render the Prometheus exposition text for scraping. */

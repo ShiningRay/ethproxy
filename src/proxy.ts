@@ -134,6 +134,32 @@ export class ProxyHandler {
     { cursor: number; expiresAt: number }
   >();
 
+  /**
+   * Responses answered from local data without any upstream call, excluding
+   * cache hits (counted by ResponseCache): eth_blockNumber from the pool
+   * head and locally served block-filter calls.
+   */
+  private readonly localAnswers = { blockNumber: 0, filters: 0 };
+
+  /**
+   * Aggregate of responses served entirely from local data: cache hits plus
+   * direct local answers, with the non-cache breakdown.
+   */
+  localStats(): {
+    total: number;
+    cacheHits: number;
+    blockNumber: number;
+    filters: number;
+  } {
+    const cacheHits = this.cache.stats().hits;
+    return {
+      total: cacheHits + this.localAnswers.blockNumber + this.localAnswers.filters,
+      cacheHits,
+      blockNumber: this.localAnswers.blockNumber,
+      filters: this.localAnswers.filters,
+    };
+  }
+
   constructor(
     private readonly pool: UpstreamPool,
     private readonly cache: ResponseCache,
@@ -479,6 +505,7 @@ export class ProxyHandler {
         if (original.method === "eth_blockNumber") {
           const local = this.localBlockNumber(original.id);
           if (local !== null) {
+            this.localAnswers.blockNumber += 1;
             results[index] = local;
             caches[index] = "local";
             return;
@@ -488,6 +515,7 @@ export class ProxyHandler {
         // never join the shared batch forwarding path.
         if (isFilterMethod(original.method)) {
           const { response, outcome } = await this.handleFilterCall(original, metrics);
+          if (outcome === "local") this.localAnswers.filters += 1;
           results[index] = response;
           caches[index] = outcome;
           return;
@@ -583,12 +611,14 @@ export class ProxyHandler {
     if (original.method === "eth_blockNumber") {
       const local = this.localBlockNumber(original.id);
       if (local !== null) {
+        this.localAnswers.blockNumber += 1;
         metrics.cacheSummary = "local";
         return local;
       }
     }
     if (isFilterMethod(original.method)) {
       const { response, outcome } = await this.handleFilterCall(original, metrics);
+      if (outcome === "local") this.localAnswers.filters += 1;
       metrics.cacheSummary = outcome;
       return response;
     }

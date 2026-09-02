@@ -17,6 +17,10 @@ export async function buildServer(
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: true,
+    // Per-request "incoming request"/"request completed" pairs carry no
+    // useful detail (no RPC method, no outcome) — silence them; startup
+    // and error logs are unaffected.
+    disableRequestLogging: true,
     bodyLimit: config.security.maxBodyBytes,
     // We sit behind nginx/Cloudflare: trust X-Forwarded-For for client IPs
     // (rate limiting depends on it). Do not expose the port directly.
@@ -105,6 +109,7 @@ export async function buildServer(
   app.get("/status", async () => ({
     ...pool.status(),
     cache: proxy.cacheStats(),
+    local: proxy.localStats(),
   }));
 
   bindMetrics(pool, proxy);
