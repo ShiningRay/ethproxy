@@ -504,6 +504,8 @@ describe("local block filters", () => {
     expect(afterStats.total).toBe(
       afterStats.cacheHits + afterStats.blockNumber + afterStats.filters,
     );
+    // The local answer counts as a hit in the combined hit rate.
+    expect(proxy.cacheStats().hitRate).toBe(1);
   });
 
   it("falls back to sticky routing when wsHeads is disabled", async () => {
