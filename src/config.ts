@@ -19,6 +19,20 @@ const healthSchema = z.object({
   /** First retry delay; doubles per attempt, capped at retryMaxDelayMs. */
   retryBaseDelayMs: z.number().int().nonnegative().default(100),
   retryMaxDelayMs: z.number().int().nonnegative().default(1000),
+  /**
+   * Track chain heads via a persistent eth_subscribe("newHeads") WS
+   * connection per upstream (falls back to HTTP polling while WS is down).
+   * When false, heads come from the HTTP poll only and WS availability is
+   * detected by a per-poll probe instead.
+   */
+  wsHeads: z.boolean().default(true),
+  /**
+   * Client-side WS keepalive interval for the persistent per-upstream
+   * connection: ping every this many ms, terminate + reconnect when no pong
+   * arrives for two intervals. Protects against provider gateways that
+   * idle-drop silent connections (close code 1006). 0 disables.
+   */
+  wsPingIntervalMs: z.number().int().nonnegative().default(30000),
 });
 
 const cacheSchema = z.object({
@@ -27,6 +41,14 @@ const cacheSchema = z.object({
   backend: z.enum(["memory", "redis"]).default("memory"),
   shortTtlMs: z.number().int().positive().default(2000),
   pendingTtlMs: z.number().int().positive().default(1000),
+  /**
+   * Fallback TTL for number-keyed entries below finalityDepth (the seven
+   * reorg-validated methods). Correctness comes from read-time validation
+   * against the reorg detector's header window; this TTL only bounds the
+   * lifetime of entries the window can no longer vouch for (e.g. written
+   * across a WS-reconnect gap).
+   */
+  unfinalizedTtlMs: z.number().int().positive().default(900000),
   /**
    * When enabled, the short TTL is derived from the observed block interval
    * (blockInterval / 4, clamped to [minTtlMs, shortTtlMs]). shortTtlMs then
@@ -71,6 +93,42 @@ const rateLimitSchema = z.object({
   wsBurst: z.number().int().positive().default(40),
   /** Max concurrent eth_subscribe subscriptions per client IP (across connections). */
   maxSubscriptionsPerIp: z.number().int().positive().default(20),
+});
+
+const txpoolSchema = z.object({
+  /**
+   * Maintain a local pending-transaction mirror via upstream WS
+   * newPendingTransactions subscriptions, and answer client
+   * eth_subscribe("newPendingTransactions") locally from it.
+   * Requires the per-upstream persistent WS connection (shared with
+   * health.wsHeads). Default off: the mirror adds one upstream
+   * subscription per upstream and a high-traffic event stream.
+   */
+  mirror: z.boolean().default(false),
+});
+
+const syncingSchema = z.object({
+  /**
+   * Answer client eth_subscribe("syncing") locally from the pool's
+   * aggregated view: syncing (with a progress object) while ANY upstream
+   * is syncing, false once none are. Status comes from the per-upstream
+   * persistent WS syncing feed (shared with health.wsHeads) with the HTTP
+   * health poll as fallback. Default off.
+   */
+  mirror: z.boolean().default(false),
+});
+
+const reorgSchema = z.object({
+  /**
+   * Detect chain reorganizations from upstream newHeads announcements by
+   * checking parentHash continuity against a sliding window of recent
+   * headers. Confirmed reorgs are logged, counted in metrics and fanned out
+   * via pool.onReorg. Requires health.wsHeads (heads carrying hash and
+   * parentHash); with plain HTTP polling no hashes are seen.
+   */
+  enabled: z.boolean().default(true),
+  /** Sliding window of recent headers kept for fork-point lookup. */
+  windowSize: z.number().int().min(16).default(128),
 });
 
 const filtersSchema = z.object({
@@ -119,7 +177,20 @@ const configSchema = z.object({
   security: securitySchema.default({}),
   rateLimit: rateLimitSchema.default({}),
   filters: filtersSchema.default({}),
+  txpool: txpoolSchema.default({}),
+  syncing: syncingSchema.default({}),
+  reorg: reorgSchema.default({}),
   cors: corsSchema.default({}),
+}).superRefine((cfg, ctx) => {
+  // Read-time reorg validation is only sound when every unfinalized cached
+  // height is covered by the detector's header window.
+  if (cfg.reorg.enabled && cfg.reorg.windowSize < cfg.cache.finalityDepth) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["reorg", "windowSize"],
+      message: `must be >= cache.finalityDepth (${cfg.cache.finalityDepth}) when reorg detection is enabled`,
+    });
+  }
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -129,6 +200,9 @@ export type CacheConfig = z.infer<typeof cacheSchema>;
 export type SecurityConfig = z.infer<typeof securitySchema>;
 export type RateLimitConfig = z.infer<typeof rateLimitSchema>;
 export type FiltersConfig = z.infer<typeof filtersSchema>;
+export type TxpoolConfig = z.infer<typeof txpoolSchema>;
+export type SyncingConfig = z.infer<typeof syncingSchema>;
+export type ReorgConfig = z.infer<typeof reorgSchema>;
 export type CorsConfig = z.infer<typeof corsSchema>;
 
 export function loadConfig(path: string): Config {

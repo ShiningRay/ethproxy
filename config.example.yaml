@@ -28,6 +28,10 @@ health:
   maxRetries: 2             # 单请求最多尝试的上游数
   retryBaseDelayMs: 100     # 重试退避基数：第 n 次重试延迟 base * 2^(n-1)
   retryMaxDelayMs: 1000     # 重试退避上限
+  wsHeads: true             # 通过持久的 eth_subscribe("newHeads") WS 连接跟踪链高（WS 断开时自动回退 HTTP 轮询）；
+                            # false 时块高仅来自 HTTP 轮询，WS 可用性改为每轮探测
+  wsPingIntervalMs: 30000   # 上游 WS 连接的客户端保活：每隔该毫秒数发 ping，连续两个间隔收不到 pong 则判定死链
+                            # 主动断开重连。防止服务商网关空闲断连（close 1006）；0 关闭
 
 security:
   # 直接拒绝的 RPC 命名空间（公网入口加固）
@@ -47,6 +51,24 @@ rateLimit:
 filters:
   stickyTtlMs: 300000       # 代理侧 filter ID 映射的空闲 TTL（粘滞路由）；每次轮询刷新，对齐 geth 默认 5 分钟的 filter 过期
 
+txpool:
+  mirror: false             # 通过上游 WS newPendingTransactions 订阅维护本地 pending 交易镜像，
+                            # 并本地应答客户端的 eth_subscribe("newPendingTransactions")；
+                            # 与 wsHeads 共用每上游一条的持久 WS 连接。默认关闭（高频事件流）
+
+syncing:
+  mirror: false             # 本地应答客户端的 eth_subscribe("syncing")：只要任一上游处于同步中就返回
+                            # syncing（带进度对象），全部同步完才回 false（订阅后立即回当前状态，
+                            # 之后只在聚合状态变化时推送）。状态来自上游 WS syncing 订阅，
+                            # HTTP 健康轮询作回退；与 wsHeads 共用每上游一条的持久 WS 连接。默认关闭
+
+reorg:
+  enabled: true             # 基于上游 newHeads 的 parentHash 连续性检测链上重组；确认的重组会记录日志、
+                            # 计入指标（ethproxy_reorgs_detected_total / ethproxy_reorg_depth）并经 pool.onReorg 广播。
+                            # 需要 wsHeads 开启（HTTP 轮询拿不到块哈希）。单点上游的短暂分歧会被仲裁过滤，
+                            # 只有冲突分支被后续块接续或被第二个上游证实才判定为重组
+  windowSize: 128           # 用于定位分叉点的近期区块头滑动窗口大小（过浅的窗口会让重组深度只报下界）
+
 cors:
   enabled: true             # 跨域支持（浏览器 DApp 需要）
   origin: "*"               # "*" 允许任意域；多个域用逗号分隔，如 "https://a.com, https://b.com"
@@ -56,6 +78,8 @@ cache:
   backend: memory           # memory | redis（可扩展其他后端）
   shortTtlMs: 2000          # 链头相关数据的短 TTL（dynamicTtl 开启时作为上限与初始回退值）
   pendingTtlMs: 1000        # 未打包交易收据等的极短 TTL
+  unfinalizedTtlMs: 900000  # 7 个重组校验方法（按块高取块/数量/叔块 + 按哈希取交易/收据）未定型条目的兜底 TTL；
+                            # 正确性由读取时对照重组检测器窗口校验保证，此 TTL 只约束窗口无法担保的条目寿命
   dynamicTtl: true          # 按观测到的出块间隔动态调整短 TTL（间隔/4，钳制在 [minTtlMs, shortTtlMs]）
   minTtlMs: 200             # 动态 TTL 下限
   finalityDepth: 64         # 区块号 ≤ 链头 - finalityDepth 视为不可变，永久缓存

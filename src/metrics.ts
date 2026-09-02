@@ -66,6 +66,19 @@ const chainHead = new Gauge({
   registers: [registry],
 });
 
+export const reorgsDetected = new Counter({
+  name: "ethproxy_reorgs_detected_total",
+  help: "Chain reorganizations confirmed from upstream head announcements",
+  registers: [registry],
+});
+
+export const reorgDepth = new Histogram({
+  name: "ethproxy_reorg_depth",
+  help: "Number of replaced blocks per confirmed reorg (lower bound when inexact)",
+  buckets: [1, 2, 3, 5, 8, 13, 21, 34],
+  registers: [registry],
+});
+
 const cacheHits = new Gauge({
   name: "ethproxy_cache_hits_total",
   help: "Cache hits since process start",
@@ -84,6 +97,13 @@ const cacheStores = new Gauge({
 const cacheErrors = new Gauge({
   name: "ethproxy_cache_errors_total",
   help: "Cache backend errors since process start",
+  registers: [registry],
+});
+
+const localResponses = new Gauge({
+  name: "ethproxy_local_responses_total",
+  help: "Responses served from local data without an upstream call, by kind (cacheHit, blockNumber, filters)",
+  labelNames: ["kind"],
   registers: [registry],
 });
 
@@ -112,6 +132,10 @@ function refreshGauges(): void {
   cacheMisses.set(stats.misses);
   cacheStores.set(stats.sets);
   cacheErrors.set(stats.errors);
+  const local = bound.proxy.localStats();
+  localResponses.set({ kind: "cacheHit" }, local.cacheHits);
+  localResponses.set({ kind: "blockNumber" }, local.blockNumber);
+  localResponses.set({ kind: "filters" }, local.filters);
 }
 
 /** Render the Prometheus exposition text for scraping. */

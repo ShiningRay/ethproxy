@@ -1,8 +1,23 @@
-import { cacheKey, ResponseCache, type CacheStats } from "./cache/index.js";
-import { requestPolicy, responseTtl, type CacheRuleContext, type RequestPolicy } from "./cache-rules.js";
+import {
+  cacheKey,
+  parseValidatedEntry,
+  rawCacheKey,
+  ResponseCache,
+  wrapValidatedEntry,
+  type CacheStats,
+} from "./cache/index.js";
+import {
+  normalizeRawKeyParams,
+  RAW_KEY_METHODS,
+  requestPolicy,
+  responseTtl,
+  type CacheRuleContext,
+  type RequestPolicy,
+} from "./cache-rules.js";
 import type { Config } from "./config.js";
 import {
   FILTER_CREATE_METHODS,
+  FILTER_POLL_METHODS,
   FILTER_UNINSTALL_METHOD,
   isFilterMethod,
   StickyFilterRouter,
@@ -12,6 +27,7 @@ import {
   errorResponse,
   formatRequestForLog,
   isJsonRpcRequest,
+  parseQuantity,
   type JsonRpcRequest,
   type JsonRpcResponse,
 } from "./rpc.js";
@@ -19,6 +35,7 @@ import { isMethodBlocked, logsRangeViolation } from "./security.js";
 import { rpcDuration, rpcRequests, upstreamRequests } from "./metrics.js";
 import { translateLatest } from "./translate.js";
 import { Upstream, UpstreamTransportError } from "./upstream.js";
+import { randomBytes } from "node:crypto";
 
 export interface ProxyLogger {
   info: (msg: string, ...args: unknown[]) => void;
@@ -98,6 +115,51 @@ export class ProxyHandler {
     Promise<{ response: JsonRpcResponse; upstreamMs: number; upstreamName?: string }>
   >();
 
+  /**
+   * Head hashes already warmed into the cache, so duplicate newHeads
+   * announcements from several upstreams cause at most one fetch.
+   */
+  private readonly warmedHeads = new Set<string>();
+
+  /**
+   * Rolling buffer of recently observed heads (ascending arrival order),
+   * backing locally served eth_newBlockFilter instances.
+   */
+  private readonly recentHeads: { number: number; hash: string }[] = [];
+  private static readonly MAX_RECENT_HEADS = 2048;
+
+  /** Locally served block filters: proxyId -> cursor + idle expiry. */
+  private readonly localBlockFilters = new Map<
+    string,
+    { cursor: number; expiresAt: number }
+  >();
+
+  /**
+   * Responses answered from local data without any upstream call, excluding
+   * cache hits (counted by ResponseCache): eth_blockNumber from the pool
+   * head and locally served block-filter calls.
+   */
+  private readonly localAnswers = { blockNumber: 0, filters: 0 };
+
+  /**
+   * Aggregate of responses served entirely from local data: cache hits plus
+   * direct local answers, with the non-cache breakdown.
+   */
+  localStats(): {
+    total: number;
+    cacheHits: number;
+    blockNumber: number;
+    filters: number;
+  } {
+    const cacheHits = this.cache.stats().hits;
+    return {
+      total: cacheHits + this.localAnswers.blockNumber + this.localAnswers.filters,
+      cacheHits,
+      blockNumber: this.localAnswers.blockNumber,
+      filters: this.localAnswers.filters,
+    };
+  }
+
   constructor(
     private readonly pool: UpstreamPool,
     private readonly cache: ResponseCache,
@@ -106,7 +168,23 @@ export class ProxyHandler {
       config.filters.stickyTtlMs,
     ),
     private readonly logger?: ProxyLogger,
-  ) {}
+  ) {
+    pool.onNewHead((head, upstreamName) => {
+      this.recordHead(head);
+      void this.warmBlockFromHead(upstreamName, head);
+    });
+  }
+
+  /** Append an observed head to the rolling buffer (pool already deduped). */
+  private recordHead(head: Record<string, unknown>): void {
+    const n = parseQuantity(head.number);
+    const hash = typeof head.hash === "string" ? head.hash : null;
+    if (n === null || hash === null) return;
+    this.recentHeads.push({ number: n, hash });
+    if (this.recentHeads.length > ProxyHandler.MAX_RECENT_HEADS) {
+      this.recentHeads.splice(0, this.recentHeads.length - ProxyHandler.MAX_RECENT_HEADS);
+    }
+  }
 
   async handle(
     body: unknown,
@@ -164,8 +242,17 @@ export class ProxyHandler {
     return response;
   }
 
+  /**
+   * Cache counters with the hit rate computed over ALL locally served
+   * responses: direct local answers (eth_blockNumber, block filters) count
+   * as hits alongside real cache hits. Raw hits/misses stay cache-only.
+   */
   cacheStats(): CacheStats {
-    return this.cache.stats();
+    const stats = this.cache.stats();
+    const local = this.localAnswers.blockNumber + this.localAnswers.filters;
+    const hits = stats.hits + local;
+    const lookups = hits + stats.misses;
+    return { ...stats, hitRate: lookups === 0 ? 0 : hits / lookups };
   }
 
   /**
@@ -209,8 +296,60 @@ export class ProxyHandler {
         this.config.cache,
       ),
       pendingTtlMs: this.config.cache.pendingTtlMs,
+      unfinalizedTtlMs: this.config.cache.unfinalizedTtlMs,
       finalityDepth: this.config.cache.finalityDepth,
     };
+  }
+
+  /** Cache key for a request: plain-text for the reorg-validated methods, hashed otherwise. */
+  private keyFor(method: string, params: unknown[]): string {
+    return RAW_KEY_METHODS.has(method)
+      ? rawCacheKey(method, normalizeRawKeyParams(method, params))
+      : cacheKey(method, params);
+  }
+
+  /**
+   * Read a cache entry, returning the parsed payload on hit, null on miss.
+   * For the reorg-validated methods the entry is checked against the reorg
+   * detector's canonical-chain view: a height whose canonical hash no longer
+   * matches the entry's stamp was reorged — the entry is stale, deleted in
+   * the background, and reported as a miss. Entries that cannot be validated
+   * (unstamped, null stamp, window gap, detector off) are trusted as-is;
+   * the TTL remains the fallback for those.
+   */
+  private async validatedGet(method: string, key: string): Promise<unknown | null> {
+    const raw = await this.cache.get(key);
+    if (raw === null) return null;
+    if (!RAW_KEY_METHODS.has(method)) return JSON.parse(raw);
+
+    let height: number | null = null;
+    let blockHash: string | null = null;
+    let payload: unknown;
+    const wrapped = parseValidatedEntry(raw);
+    if (wrapped !== null) {
+      height = wrapped.h;
+      blockHash = wrapped.b;
+      payload = wrapped.d;
+    } else {
+      payload = JSON.parse(raw);
+      // Unwrapped payloads (finalized entries, mined tx/receipt results)
+      // carry their own block coordinates: block payloads as number/hash,
+      // transaction and receipt payloads as blockNumber/blockHash.
+      if (typeof payload === "object" && payload !== null && !Array.isArray(payload)) {
+        const obj = payload as Record<string, unknown>;
+        const bh = obj.blockHash ?? obj.hash;
+        const bn = obj.blockNumber ?? obj.number;
+        if (typeof bh === "string") {
+          blockHash = bh;
+          height = typeof bn === "string" ? parseQuantity(bn) : null;
+        }
+      }
+    }
+    if (height === null || blockHash === null) return payload;
+    const canonical = this.pool.canonicalHashAt(height);
+    if (canonical === null || canonical === blockHash) return payload;
+    void this.cache.delete(key);
+    return null;
   }
 
   /** Answer eth_blockNumber from the locally observed pool head. */
@@ -218,6 +357,128 @@ export class ProxyHandler {
     const head = this.pool.chainHead;
     if (head === null) return null;
     return { jsonrpc: "2.0", id, result: `0x${head.toString(16)}` };
+  }
+
+  /**
+   * Warm the response cache from a newHeads payload, so the fresh head is
+   * served as if eth_getBlockByNumber / eth_getBlockByHash had already been
+   * called for it.
+   *
+   * Most clients push a bare header (no transactions field); the block is
+   * then fetched once from the announcing upstream to cache a complete,
+   * correct answer. When the payload already carries the transaction list
+   * (e.g. geth's includeTransactions extension) it is cached directly.
+   * Best-effort: failures are logged, never thrown. Entries use the short
+   * head TTL so a reorged head expires quickly.
+   */
+  async warmBlockFromHead(
+    upstreamName: string,
+    head: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.config.cache.enabled) return;
+    const hash = typeof head.hash === "string" ? head.hash : null;
+    if (hash === null || typeof head.number !== "string") return;
+    if (this.warmedHeads.has(hash)) return;
+    this.warmedHeads.add(hash);
+    if (this.warmedHeads.size > 256) {
+      const oldest = this.warmedHeads.values().next().value;
+      if (oldest !== undefined) this.warmedHeads.delete(oldest);
+    }
+
+    try {
+      if (Array.isArray(head.transactions)) {
+        await this.storeHeadedBlock(head);
+        return;
+      }
+      const pinned = this.pool.byName(upstreamName);
+      if (pinned === undefined) return;
+      const body = await pinned.call({
+        jsonrpc: "2.0",
+        id: 0,
+        method: "eth_getBlockByHash",
+        params: [hash, false],
+      });
+      upstreamRequests.inc({ upstream: upstreamName, result: "ok" });
+      const response = Array.isArray(body) ? body[0] : body;
+      if (
+        response !== undefined &&
+        response.error === undefined &&
+        typeof response.result === "object" &&
+        response.result !== null
+      ) {
+        await this.storeHeadedBlock(response.result as Record<string, unknown>);
+      }
+    } catch (err) {
+      upstreamRequests.inc({ upstream: upstreamName, result: "error" });
+      this.logger?.warn(`head cache warming failed for ${hash}`, err);
+    }
+  }
+
+  /**
+   * Store a block object under the cache keys of the common
+   * eth_getBlockByNumber / eth_getBlockByHash call shapes. The fullTx=false
+   * shapes (including the omitted-flag form) require transactions as hashes;
+   * the fullTx=true shapes are only written when full transaction objects
+   * are present (or the block is empty, where both shapes coincide).
+   *
+   * Number-keyed entries use the plain-text key plus a validation stamp
+   * (the head's own height and hash) with the unfinalized TTL: a reorged
+   * head is then invalidated on read instead of expiring blindly. Hash-keyed
+   * entries keep the hashed key and the short head TTL.
+   */
+  private async storeHeadedBlock(block: Record<string, unknown>): Promise<void> {
+    const hash = typeof block.hash === "string" ? block.hash : null;
+    const numberHex = typeof block.number === "string" ? block.number : null;
+    const blockNumber = numberHex !== null ? parseQuantity(numberHex) : null;
+    if (hash === null || numberHex === null || blockNumber === null) return;
+    const shortTtlMs = computeShortTtlMs(
+      this.pool.estimatedBlockIntervalMs,
+      this.config.cache,
+    );
+    const unfinalizedTtlMs = this.config.cache.unfinalizedTtlMs;
+
+    const txs = Array.isArray(block.transactions) ? block.transactions : [];
+    const hasFullTx = txs.length > 0 && typeof txs[0] === "object" && txs[0] !== null;
+    const asHashes = hasFullTx
+      ? {
+          ...block,
+          transactions: txs.map(
+            (t) => (t as Record<string, unknown>).hash,
+          ),
+        }
+      : block;
+
+    const numberValues: { params: unknown[]; value: unknown }[] = [
+      { params: [numberHex], value: asHashes },
+      { params: [numberHex, false], value: asHashes },
+    ];
+    const hashValues: { params: unknown[]; value: unknown }[] = [
+      { params: [hash], value: asHashes },
+      { params: [hash, false], value: asHashes },
+    ];
+    if (hasFullTx || txs.length === 0) {
+      numberValues.push({ params: [numberHex, true], value: block });
+      hashValues.push({ params: [hash, true], value: block });
+    }
+    await Promise.all([
+      ...numberValues.map((e) =>
+        this.cache.set(
+          rawCacheKey(
+            "eth_getBlockByNumber",
+            normalizeRawKeyParams("eth_getBlockByNumber", e.params),
+          ),
+          wrapValidatedEntry(blockNumber, hash, e.value),
+          unfinalizedTtlMs,
+        ),
+      ),
+      ...hashValues.map((e) =>
+        this.cache.set(
+          cacheKey("eth_getBlockByHash", e.params),
+          JSON.stringify(e.value),
+          shortTtlMs,
+        ),
+      ),
+    ]);
   }
 
   private async handleBatch(
@@ -253,6 +514,7 @@ export class ProxyHandler {
         if (original.method === "eth_blockNumber") {
           const local = this.localBlockNumber(original.id);
           if (local !== null) {
+            this.localAnswers.blockNumber += 1;
             results[index] = local;
             caches[index] = "local";
             return;
@@ -262,6 +524,7 @@ export class ProxyHandler {
         // never join the shared batch forwarding path.
         if (isFilterMethod(original.method)) {
           const { response, outcome } = await this.handleFilterCall(original, metrics);
+          if (outcome === "local") this.localAnswers.filters += 1;
           results[index] = response;
           caches[index] = outcome;
           return;
@@ -274,13 +537,13 @@ export class ProxyHandler {
           caches[index] = "miss";
           return;
         }
-        const key = cacheKey(request.method, params);
-        const cached = await this.cache.get(key);
+        const key = this.keyFor(request.method, params);
+        const cached = await this.validatedGet(request.method, key);
         if (cached !== null) {
           results[index] = {
             jsonrpc: "2.0",
             id: request.id,
-            result: JSON.parse(cached),
+            result: cached,
           };
           caches[index] = "hit";
           return;
@@ -357,12 +620,14 @@ export class ProxyHandler {
     if (original.method === "eth_blockNumber") {
       const local = this.localBlockNumber(original.id);
       if (local !== null) {
+        this.localAnswers.blockNumber += 1;
         metrics.cacheSummary = "local";
         return local;
       }
     }
     if (isFilterMethod(original.method)) {
       const { response, outcome } = await this.handleFilterCall(original, metrics);
+      if (outcome === "local") this.localAnswers.filters += 1;
       metrics.cacheSummary = outcome;
       return response;
     }
@@ -372,11 +637,11 @@ export class ProxyHandler {
     const policy = this.policyFor(request.method, params, ctx);
 
     if (policy.cacheable) {
-      const key = cacheKey(request.method, params);
-      const cached = await this.cache.get(key);
+      const key = this.keyFor(request.method, params);
+      const cached = await this.validatedGet(request.method, key);
       if (cached !== null) {
         metrics.cacheSummary = "hit";
-        return { jsonrpc: "2.0", id: request.id, result: JSON.parse(cached) };
+        return { jsonrpc: "2.0", id: request.id, result: cached };
       }
       const { response, upstreamMs, upstreamName } = await this.fetchAndStore(
         request,
@@ -454,19 +719,28 @@ export class ProxyHandler {
   }
 
   /**
-   * Handle one filter call with sticky routing.
+   * Handle one filter call. Two paths:
    *
-   * Filter state lives in a single node's memory and ids are node-local, so:
-   * - creation is forwarded through the normal pool; the node-local id in the
-   *   response is replaced by a proxy-issued id recorded in the sticky table;
-   * - polling / uninstall rewrite params[0] back to the node-local id and are
-   *   pinned to the upstream that owns the filter — failover to another node
-   *   is pointless, the filter does not exist there.
+   * - eth_newBlockFilter is served locally when the pool tracks heads via
+   *   its own upstream newHeads subscriptions (health.wsHeads): the proxy
+   *   issues the id and answers polls from its rolling head buffer, with no
+   *   upstream involvement at all.
+   * - Everything else uses sticky routing. Filter state lives in a single
+   *   node's memory and ids are node-local, so creation is forwarded through
+   *   the normal pool and the node-local id in the response is replaced by a
+   *   proxy-issued id recorded in the sticky table; polling / uninstall
+   *   rewrite params[0] back to the node-local id and are pinned to the
+   *   owning upstream — failover to another node is pointless, the filter
+   *   does not exist there.
    */
   private async handleFilterCall(
     request: JsonRpcRequest,
     metrics: RequestMetrics,
   ): Promise<{ response: JsonRpcResponse; outcome: CacheOutcome }> {
+    if (request.method === "eth_newBlockFilter" && this.pool.localHeadsEnabled) {
+      return this.createLocalBlockFilter(request);
+    }
+
     if (FILTER_CREATE_METHODS.has(request.method)) {
       const { responses, upstreamMs, upstreamName } = await this.forwardBatch([
         request,
@@ -488,6 +762,38 @@ export class ProxyHandler {
 
     const params = Array.isArray(request.params) ? request.params : [];
     const proxyId = typeof params[0] === "string" ? params[0] : "";
+
+    // Locally served block filters take precedence; ids are proxy-issued.
+    if (
+      FILTER_POLL_METHODS.has(request.method) ||
+      request.method === FILTER_UNINSTALL_METHOD
+    ) {
+      const local =
+        this.localBlockFilters.size > 0
+          ? this.lookupLocalBlockFilter(proxyId)
+          : null;
+      if (local !== null) {
+        if (request.method === FILTER_UNINSTALL_METHOD) {
+          this.localBlockFilters.delete(proxyId);
+          return {
+            response: { jsonrpc: "2.0", id: request.id, result: true },
+            outcome: "local",
+          };
+        }
+        const fresh = this.recentHeads.filter((h) => h.number > local.cursor);
+        fresh.sort((a, b) => a.number - b.number);
+        if (fresh.length > 0) local.cursor = fresh[fresh.length - 1]!.number;
+        return {
+          response: {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: fresh.map((h) => h.hash),
+          },
+          outcome: "local",
+        };
+      }
+    }
+
     const mapping = this.filters.lookup(proxyId);
     if (mapping === null) {
       // Mirrors node behaviour for unknown/expired filters.
@@ -528,6 +834,45 @@ export class ProxyHandler {
       this.filters.remove(proxyId);
     }
     return { response, outcome: "miss" };
+  }
+
+  /**
+   * Create a locally served block filter. The cursor starts at the current
+   * pool head: only heads observed after creation are reported, matching
+   * node behaviour. Idle filters expire after filters.stickyTtlMs, aligning
+   * with the node-side filter timeout.
+   */
+  private createLocalBlockFilter(
+    request: JsonRpcRequest,
+  ): { response: JsonRpcResponse; outcome: CacheOutcome } {
+    const now = Date.now();
+    for (const [id, f] of this.localBlockFilters) {
+      if (f.expiresAt <= now) this.localBlockFilters.delete(id);
+    }
+    const id = `0x${randomBytes(16).toString("hex")}`;
+    this.localBlockFilters.set(id, {
+      cursor: this.pool.chainHead ?? 0,
+      expiresAt: now + this.config.filters.stickyTtlMs,
+    });
+    return {
+      response: { jsonrpc: "2.0", id: request.id, result: id },
+      outcome: "local",
+    };
+  }
+
+  /** Resolve a local block filter; refreshes its idle expiry on hit. */
+  private lookupLocalBlockFilter(
+    id: string,
+  ): { cursor: number; expiresAt: number } | null {
+    const f = this.localBlockFilters.get(id);
+    if (f === undefined) return null;
+    const now = Date.now();
+    if (f.expiresAt <= now) {
+      this.localBlockFilters.delete(id);
+      return null;
+    }
+    f.expiresAt = now + this.config.filters.stickyTtlMs;
+    return f;
   }
 
   /**
@@ -636,6 +981,16 @@ export class ProxyHandler {
         : policy.ttlMs;
     if (ttlMs === false) return;
 
-    await this.cache.set(key, JSON.stringify(response.result), ttlMs);
+    // Number-keyed entries below finalityDepth carry a validation stamp:
+    // the height plus the canonical hash observed at write time.
+    const value =
+      policy.stampHeight !== undefined
+        ? wrapValidatedEntry(
+            policy.stampHeight,
+            this.pool.canonicalHashAt(policy.stampHeight),
+            response.result,
+          )
+        : JSON.stringify(response.result);
+    await this.cache.set(key, value, ttlMs);
   }
 }

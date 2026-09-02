@@ -5,6 +5,8 @@ export interface CacheRuleContext {
   chainHead: number | null;
   shortTtlMs: number;
   pendingTtlMs: number;
+  /** Fallback TTL for reorg-validated entries below finalityDepth. */
+  unfinalizedTtlMs: number;
   finalityDepth: number;
 }
 
@@ -15,10 +17,13 @@ export const LONG_TTL_MS = 60 * 60 * 1000; // chain id, client version, etc.
  * - cacheable: false            -> never touch the cache
  * - ttlMs: number | null        -> store response with this TTL (null = no expiry)
  * - ttlMs: "by-response"        -> TTL decided from the response via responseTtl()
+ * - stampHeight: number         -> store wrapped via wrapValidatedEntry with
+ *                                  this height + the canonical hash at write
+ *                                  time, for read-time reorg validation
  */
 export type RequestPolicy =
   | { cacheable: false }
-  | { cacheable: true; ttlMs: number | null | "by-response" };
+  | { cacheable: true; ttlMs: number | null | "by-response"; stampHeight?: number };
 
 const NOT_CACHEABLE: RequestPolicy = { cacheable: false };
 
@@ -42,6 +47,51 @@ const NUMBER_KEYED_METHODS = new Set([
   "eth_getUncleByBlockNumberAndIndex",
   "eth_getUncleCountByBlockNumber",
 ]);
+
+/**
+ * The seven methods using plain-text cache keys (params embedded, not
+ * hashed) and read-time reorg validation. Number-keyed entries below
+ * finalityDepth are stamped with the canonical hash at write time; mined
+ * tx-hash entries validate from their own blockNumber/blockHash payload.
+ */
+export const RAW_KEY_METHODS = new Set([
+  ...NUMBER_KEYED_METHODS,
+  "eth_getTransactionByHash",
+  "eth_getTransactionReceipt",
+]);
+
+/** Per-method param kinds for raw-key normalization: q = quantity, d = data, x = leave as-is. */
+const RAW_KEY_PARAM_KINDS: Record<string, ("q" | "d" | "x")[]> = {
+  eth_getBlockByNumber: ["q", "x"],
+  eth_getBlockTransactionCountByNumber: ["q"],
+  eth_getTransactionByBlockNumberAndIndex: ["q", "q"],
+  eth_getUncleByBlockNumberAndIndex: ["q", "q"],
+  eth_getUncleCountByBlockNumber: ["q"],
+  eth_getTransactionByHash: ["d"],
+  eth_getTransactionReceipt: ["d"],
+};
+
+/** Canonical quantity form: lowercase minimal hex ("0x03E9" -> "0x3e9"); non-quantities untouched. */
+function normalizeQuantity(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const n = parseQuantity(value);
+  return n === null ? value : `0x${n.toString(16)}`;
+}
+
+/**
+ * Normalize params for raw-key construction so semantically equal calls map
+ * to one key (and external tooling has a single canonical form to build).
+ */
+export function normalizeRawKeyParams(method: string, params: unknown[]): unknown[] {
+  const kinds = RAW_KEY_PARAM_KINDS[method];
+  if (kinds === undefined) return params;
+  return params.map((p, i) => {
+    const kind = kinds[i];
+    if (kind === "q") return normalizeQuantity(p);
+    if (kind === "d") return typeof p === "string" ? p.toLowerCase() : p;
+    return p;
+  });
+}
 
 /** State queries: method -> index of the block tag param. */
 const STATE_METHOD_TAG_INDEX: Record<string, number> = {
@@ -76,9 +126,15 @@ function isFinalized(blockNumber: number, ctx: CacheRuleContext): boolean {
 /**
  * Policy for a request that carries a block number/tag in `tag`.
  * "pending" and blocks beyond the known head are never cacheable;
- * deep-enough blocks are permanent; anything near the head is short-TTL.
+ * deep-enough blocks are permanent; anything near the head is short-TTL —
+ * or, with `nearHead: "stamped"` (the number-keyed raw-key methods), gets
+ * the unfinalized TTL plus a validation stamp for read-time reorg checks.
  */
-function blockTagPolicy(tag: unknown, ctx: CacheRuleContext): RequestPolicy {
+function blockTagPolicy(
+  tag: unknown,
+  ctx: CacheRuleContext,
+  nearHead: "short" | "stamped" = "short",
+): RequestPolicy {
   if (tag === undefined) return { cacheable: true, ttlMs: ctx.shortTtlMs }; // defaults to "latest"
   if (typeof tag === "string" && BLOCK_TAGS.has(tag)) {
     if (tag === "pending") return NOT_CACHEABLE;
@@ -88,9 +144,11 @@ function blockTagPolicy(tag: unknown, ctx: CacheRuleContext): RequestPolicy {
   const n = parseQuantity(tag);
   if (n === null) return NOT_CACHEABLE;
   if (ctx.chainHead !== null && n > ctx.chainHead) return NOT_CACHEABLE; // future block
-  return isFinalized(n, ctx)
-    ? { cacheable: true, ttlMs: null }
-    : { cacheable: true, ttlMs: ctx.shortTtlMs };
+  if (isFinalized(n, ctx)) return { cacheable: true, ttlMs: null };
+  if (nearHead === "stamped") {
+    return { cacheable: true, ttlMs: ctx.unfinalizedTtlMs, stampHeight: n };
+  }
+  return { cacheable: true, ttlMs: ctx.shortTtlMs };
 }
 
 function logsPolicy(params: unknown[], ctx: CacheRuleContext): RequestPolicy {
@@ -125,7 +183,7 @@ export function requestPolicy(
   }
 
   if (NUMBER_KEYED_METHODS.has(method)) {
-    return blockTagPolicy(params[0], ctx);
+    return blockTagPolicy(params[0], ctx, "stamped");
   }
 
   if (method in STATE_METHOD_TAG_INDEX) {

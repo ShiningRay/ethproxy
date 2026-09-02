@@ -1,10 +1,13 @@
-import type { HealthConfig, UpstreamConfig } from "./config.js";
+import type { HealthConfig, ReorgConfig, SyncingConfig, TxpoolConfig, UpstreamConfig } from "./config.js";
+import { reorgDepth, reorgsDetected } from "./metrics.js";
 import { parseQuantity, type JsonRpcResponse } from "./rpc.js";
+import { ReorgDetector, type ReorgEvent } from "./reorg.js";
 import {
   Upstream,
   upstreamWsUrl,
   type UpstreamStatus,
 } from "./upstream.js";
+import { UpstreamWsConnection } from "./upstream-ws.js";
 import WebSocket from "ws";
 
 export interface PoolLogger {
@@ -14,6 +17,7 @@ export interface PoolLogger {
 
 export class UpstreamPool {
   private readonly upstreams: Upstream[];
+  private readonly wsConns: Map<string, UpstreamWsConnection>;
   private timers: NodeJS.Timeout[] = [];
   /** Flat weighted selection list; each upstream appears `weight` times. */
   private selectionCursor = 0;
@@ -22,14 +26,266 @@ export class UpstreamPool {
   private lastObservedHead: number | null = null;
   private lastObservedAt = 0;
 
+  /** Listeners for locally observed heads (cache warming, local newHeads
+   *  subscriptions and block filters). */
+  private readonly headListeners = new Set<
+    (head: Record<string, unknown>, upstreamName: string) => void
+  >();
+  /** Hash of the most recently announced head, for cross-upstream dedupe. */
+  private lastAnnouncedHeadHash: string | null = null;
+
+  /**
+   * Reorg detector fed with every distinct announced head. Only present
+   * when reorg detection is enabled and heads carry hash+parentHash (i.e.
+   * health.wsHeads is on); plain HTTP polls see block numbers only.
+   */
+  private readonly reorgDetector: ReorgDetector | null;
+  private readonly reorgListeners = new Set<(event: ReorgEvent) => void>();
+
+  /**
+   * Local pending-transaction mirror: hashes recently announced by upstreams
+   * (deduped, bounded FIFO). Not a true txpool — mined/dropped transactions
+   * are not evicted; it exists to fan out newPendingTransactions locally.
+   */
+  private readonly pendingTxSeen = new Set<string>();
+  private readonly pendingTxListeners = new Set<(hash: string) => void>();
+  private static readonly MAX_PENDING_TX = 4096;
+
+  /**
+   * Local syncing-status mirror. Each upstream's latest known status is
+   * tracked (from its WS syncing feed when the mirror is on, and from the
+   * HTTP health poll — which requests eth_syncing anyway — as fallback).
+   * The announced status is the aggregate: if ANY upstream is syncing, the
+   * pool reports syncing (that upstream's progress object); once none are,
+   * it reports false. New subscribers are immediately answered with the
+   * current aggregate, mirroring node behaviour; updates fan out only on
+   * change.
+   */
+  private readonly syncingByUpstream = new Map<
+    string,
+    false | Record<string, unknown>
+  >();
+  private syncingStatus: false | Record<string, unknown> | null = null;
+  private lastSyncingSerialized: string | null = null;
+  private readonly syncingListeners = new Set<
+    (status: false | Record<string, unknown>) => void
+  >();
+
+  /** True when the pool tracks heads via its own upstream newHeads subscriptions. */
+  get localHeadsEnabled(): boolean {
+    return this.health.wsHeads;
+  }
+
+  /** True when the local pending-transaction mirror is enabled. */
+  get pendingTxMirrorEnabled(): boolean {
+    return this.txpool.mirror;
+  }
+
+  /** True when the local syncing-status mirror is enabled. */
+  get syncingMirrorEnabled(): boolean {
+    return this.syncing.mirror;
+  }
+
+  /**
+   * Register a listener fired for every distinct observed head (deduped by
+   * block hash across upstreams). Returns an unsubscribe function.
+   */
+  onNewHead(
+    listener: (head: Record<string, unknown>, upstreamName: string) => void,
+  ): () => void {
+    this.headListeners.add(listener);
+    return () => {
+      this.headListeners.delete(listener);
+    };
+  }
+
+  /**
+   * The canonical hash recorded at height `n` by the reorg detector, or
+   * null when unknown (detector disabled, or the window does not cover the
+   * height). Used by the response cache for read-time reorg validation.
+   */
+  canonicalHashAt(n: number): string | null {
+    return this.reorgDetector?.canonicalHashAt(n) ?? null;
+  }
+
+  /**
+   * Register a listener fired for every confirmed chain reorganization.
+   * Returns an unsubscribe function.
+   */
+  onReorg(listener: (event: ReorgEvent) => void): () => void {
+    this.reorgListeners.add(listener);
+    return () => {
+      this.reorgListeners.delete(listener);
+    };
+  }
+
+  private announceReorg(event: ReorgEvent): void {
+    reorgsDetected.inc();
+    reorgDepth.observe(event.depth);
+    this.logger?.warn(
+      `chain reorg detected: heights ${event.fromNumber}..${event.toNumber} replaced ` +
+        `(depth ${event.depth}${event.exact ? "" : "+"}), new head ${event.newHash}` +
+        (event.oldHash !== null ? `, old head ${event.oldHash}` : ""),
+    );
+    for (const listener of this.reorgListeners) listener(event);
+  }
+
+  /**
+   * Register a listener fired for every distinct pending transaction hash
+   * observed from upstreams (deduped). Returns an unsubscribe function.
+   */
+  onPendingTx(listener: (hash: string) => void): () => void {
+    this.pendingTxListeners.add(listener);
+    return () => {
+      this.pendingTxListeners.delete(listener);
+    };
+  }
+
+  private announcePendingTx(hash: string): void {
+    if (this.pendingTxSeen.has(hash)) return;
+    this.pendingTxSeen.add(hash);
+    if (this.pendingTxSeen.size > UpstreamPool.MAX_PENDING_TX) {
+      const oldest = this.pendingTxSeen.values().next().value;
+      if (oldest !== undefined) this.pendingTxSeen.delete(oldest);
+    }
+    for (const listener of this.pendingTxListeners) listener(hash);
+  }
+
+  /**
+   * Register a listener for syncing-status changes (deduped). The listener
+   * is immediately invoked with the latest known status, mirroring how a
+   * node answers eth_subscribe("syncing"). Returns an unsubscribe function.
+   */
+  onSyncingStatus(
+    listener: (status: false | Record<string, unknown>) => void,
+  ): () => void {
+    this.syncingListeners.add(listener);
+    if (this.syncingStatus !== null) listener(this.syncingStatus);
+    return () => {
+      this.syncingListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Record one upstream's latest syncing status and fan out the aggregate:
+   * syncing (a progress object) while any upstream reports syncing, false
+   * once none do. Fanned out only when the aggregate changes.
+   */
+  private updateSyncing(
+    upstreamName: string,
+    status: false | Record<string, unknown> | null,
+  ): void {
+    if (status === null) {
+      this.syncingByUpstream.delete(upstreamName);
+    } else {
+      this.syncingByUpstream.set(upstreamName, status);
+    }
+    if (this.syncingByUpstream.size === 0) return; // nothing known yet
+    let aggregate: false | Record<string, unknown> = false;
+    for (const s of this.syncingByUpstream.values()) {
+      if (s !== false) {
+        aggregate = s;
+        break;
+      }
+    }
+    const serialized = JSON.stringify(aggregate);
+    if (serialized === this.lastSyncingSerialized) return;
+    this.lastSyncingSerialized = serialized;
+    this.syncingStatus = aggregate;
+    for (const listener of this.syncingListeners) listener(aggregate);
+  }
+
   constructor(
     upstreamConfigs: UpstreamConfig[],
     private readonly health: HealthConfig,
     private readonly logger?: PoolLogger,
     private readonly expectedChainId?: number,
+    private readonly txpool: TxpoolConfig = { mirror: false },
+    private readonly syncing: SyncingConfig = { mirror: false },
+    reorg: ReorgConfig = { enabled: true, windowSize: 128 },
   ) {
     this.upstreams = upstreamConfigs.map(
       (c) => new Upstream(c, health.requestTimeoutMs),
+    );
+    this.reorgDetector =
+      reorg.enabled && health.wsHeads
+        ? new ReorgDetector({ windowSize: reorg.windowSize })
+        : null;
+    // The persistent per-upstream WS connection exists when it carries at
+    // least one feed (heads, the pending-tx mirror and/or the syncing
+    // mirror). With all disabled, WS availability is detected by a
+    // per-poll probe instead.
+    this.wsConns = new Map(
+      health.wsHeads || txpool.mirror || syncing.mirror
+        ? this.upstreams.map((u) => [
+            u.name,
+            new UpstreamWsConnection(
+              u,
+              {
+                newHeads: health.wsHeads,
+                pendingTransactions: txpool.mirror,
+                syncing: syncing.mirror,
+              },
+              {
+                onHead: (head) => {
+                  const blockNumber = parseQuantity(head.number);
+                  if (blockNumber === null) return;
+                  u.blockNumber = blockNumber;
+                  const chainHead = this.chainHead;
+                  if (chainHead !== null) this.observeHead(chainHead);
+                  // Announce each distinct head once, however many
+                  // upstreams push it; a reorg at the same height has a
+                  // different hash and is announced again.
+                  const hash = typeof head.hash === "string" ? head.hash : null;
+                  if (hash !== null && hash === this.lastAnnouncedHeadHash) return;
+                  if (hash !== null) this.lastAnnouncedHeadHash = hash;
+                  // Reorg detection needs hash + parentHash; heads lacking
+                  // either (defensive: non-standard upstreams) are skipped.
+                  const parentHash =
+                    typeof head.parentHash === "string" ? head.parentHash : null;
+                  if (
+                    this.reorgDetector !== null &&
+                    hash !== null &&
+                    parentHash !== null
+                  ) {
+                    for (const event of this.reorgDetector.observe(
+                      { number: blockNumber, hash, parentHash },
+                      u.name,
+                    )) {
+                      this.announceReorg(event);
+                    }
+                  }
+                  for (const listener of this.headListeners) listener(head, u.name);
+                },
+                onPendingTx: (hash) => this.announcePendingTx(hash),
+                onSyncing: (status) => this.updateSyncing(u.name, status),
+                onFeedIssue: (kind, status, detail) => {
+                  this.logger?.warn(
+                    status === "rejected"
+                      ? `upstream ${u.name} rejected the ${kind} subscription${detail !== undefined ? `: ${detail}` : ""}; that feed stays off until reconnect`
+                      : `upstream ${u.name} never answered the ${kind} subscription (unsupported?); that feed stays off while other feeds keep working`,
+                  );
+                },
+                onAvailability: (available, detail) => {
+                  if (u.wsHealthy !== available) {
+                    if (available) {
+                      this.logger?.info(
+                        `upstream ${u.name} websocket is now available`,
+                      );
+                    } else {
+                      this.logger?.warn(
+                        `upstream ${u.name} websocket unavailable${detail !== undefined ? ` (${detail})` : ""}, falling back to HTTP polling`,
+                      );
+                    }
+                  }
+                  u.wsHealthy = available;
+                },
+              },
+              Math.min(health.requestTimeoutMs, 5000),
+              health.wsPingIntervalMs,
+            ),
+          ])
+        : [],
     );
   }
 
@@ -120,6 +376,7 @@ export class UpstreamPool {
   stop(): void {
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
+    for (const conn of this.wsConns.values()) conn.stop();
   }
 
   /** Poll one upstream: eth_syncing + eth_blockNumber + eth_chainId in one batch. */
@@ -143,6 +400,17 @@ export class UpstreamPool {
         throw new Error("unexpected poll response");
       }
       u.syncing = syncingRes.result !== false;
+      // Feed the mirror from the poll too: it is the fallback source while
+      // an upstream's WS is down (eth_syncing is requested here anyway).
+      if (
+        syncingRes.result === false ||
+        (typeof syncingRes.result === "object" && syncingRes.result !== null)
+      ) {
+        this.updateSyncing(
+          u.name,
+          syncingRes.result as false | Record<string, unknown>,
+        );
+      }
       u.blockNumber = parseQuantity(blockRes.result);
       if (u.blockNumber === null) throw new Error("bad eth_blockNumber");
 
@@ -171,6 +439,9 @@ export class UpstreamPool {
     } catch (err) {
       u.consecutiveFailures += 1;
       u.wsHealthy = false;
+      // Drop the mirror entry: a node we can no longer reach must not pin
+      // the aggregated syncing status to its last known value.
+      this.updateSyncing(u.name, null);
       if (
         u.healthy &&
         u.consecutiveFailures >= this.health.failureThreshold
@@ -186,13 +457,23 @@ export class UpstreamPool {
       return;
     }
 
-    await this.probeWs(u);
+    // Keep the persistent WS connection alive; heads (and the pending-tx
+    // mirror) arrive over WS when available, otherwise the HTTP poll above
+    // remains the source. With neither feed enabled, just probe WS
+    // availability for client forwarding.
+    const conn = this.wsConns.get(u.name);
+    if (conn !== undefined) {
+      await conn.ensureStarted();
+    } else {
+      await this.probeWs(u);
+    }
   }
 
   /**
    * Probe the upstream's WebSocket endpoint: connect and make one
    * eth_chainId call. Only runs when the HTTP side is healthy; a node with
    * WS disabled keeps serving HTTP but is excluded from WS forwarding.
+   * Used when wsHeads is disabled (no persistent subscription).
    */
   private async probeWs(u: Upstream): Promise<void> {
     const url = upstreamWsUrl(u);

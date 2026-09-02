@@ -58,10 +58,11 @@ export function renderIndexPage(meta: IndexPageMeta): string {
     <div class="card"><div class="label">Cache Backend</div><div class="value">${meta.cacheBackend}</div></div>
   </div>
   <div class="cards">
-    <div class="card"><div class="label">Cache Hit Rate</div><div class="value" id="hitRate">–</div></div>
+    <div class="card"><div class="label">Hit Rate (incl. local)</div><div class="value" id="hitRate">–</div></div>
     <div class="card"><div class="label">Cache Hits</div><div class="value ok" id="hits">–</div></div>
     <div class="card"><div class="label">Cache Misses</div><div class="value" id="misses">–</div></div>
     <div class="card"><div class="label">Cache Stores</div><div class="value" id="sets">–</div></div>
+    <div class="card"><div class="label">Local Answers</div><div class="value ok" id="localTotal">–</div><div class="label" id="localBreakdown" style="margin-top:0.3rem;text-transform:none"></div></div>
   </div>
   <table>
     <thead><tr>
@@ -97,6 +98,13 @@ async function refresh() {
       document.getElementById("hits").textContent = s.cache.hits.toLocaleString();
       document.getElementById("misses").textContent = s.cache.misses.toLocaleString();
       document.getElementById("sets").textContent = s.cache.sets.toLocaleString();
+    }
+    if (s.local) {
+      document.getElementById("localTotal").textContent = s.local.total.toLocaleString();
+      document.getElementById("localBreakdown").textContent =
+        "cache " + s.local.cacheHits.toLocaleString() +
+        " · blockNumber " + s.local.blockNumber.toLocaleString() +
+        " · filters " + s.local.filters.toLocaleString();
     }
     document.getElementById("upstreams").innerHTML = s.upstreams.map(u => {
       const ok = u.healthy && !u.syncing;

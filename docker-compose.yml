@@ -1,0 +1,36 @@
+services:
+  ethproxy:
+    build: .
+    image: ethproxy:latest
+    container_name: ethproxy
+    restart: unless-stopped
+    ports:
+      - "8545:8545"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+        required: false
+
+  # 可选：仅当 config.yaml 中 cache.backend 设为 redis 时需要
+  redis:
+    image: redis:7-alpine
+    container_name: ethproxy-redis
+    restart: unless-stopped
+    profiles: ["redis"]
+    command:
+      - redis-server
+      - --maxmemory 256mb
+      - --maxmemory-policy allkeys-lru
+      - --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:
