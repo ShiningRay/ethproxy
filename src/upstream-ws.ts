@@ -9,7 +9,7 @@ export interface UpstreamWsCallbacks {
   /** syncing notification payload: false when not syncing, progress object otherwise. */
   onSyncing?: (status: false | Record<string, unknown>) => void;
   /** Called on WS availability transitions (subscription confirmed / lost). */
-  onAvailability: (available: boolean) => void;
+  onAvailability: (available: boolean, detail?: string) => void;
 }
 
 /** Which subscriptions to hold on the persistent connection. */
@@ -167,18 +167,24 @@ export class UpstreamWsConnection {
         }
       });
 
-      const onDown = (): void => {
+      const onDown = (code?: number, reason?: Buffer): void => {
         if (this.ws === ws) {
           this.ws = null;
           this.ready = null;
         }
-        this.callbacks.onAvailability(false);
+        // Surface the peer's close code/reason: it distinguishes a policy
+        // kick (e.g. 1008), a clean close (1000) and an abnormal drop (1006).
+        const detail =
+          code === undefined
+            ? undefined
+            : `closed with ${code}${reason && reason.length > 0 ? `: ${reason.toString()}` : ""}`;
+        this.callbacks.onAvailability(false, detail);
         finish();
         this.scheduleReconnect();
       };
       // "error" is always followed by "close"; handle the teardown once.
       ws.on("error", () => {});
-      ws.on("close", onDown);
+      ws.on("close", (code, reason) => onDown(code, reason));
     });
   }
 
