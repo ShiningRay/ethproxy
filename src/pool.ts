@@ -259,7 +259,7 @@ export class UpstreamPool {
                 },
                 onPendingTx: (hash) => this.announcePendingTx(hash),
                 onSyncing: (status) => this.updateSyncing(u.name, status),
-                onAvailability: (available) => {
+                onAvailability: (available, detail) => {
                   if (u.wsHealthy !== available) {
                     if (available) {
                       this.logger?.info(
@@ -267,7 +267,7 @@ export class UpstreamPool {
                       );
                     } else {
                       this.logger?.warn(
-                        `upstream ${u.name} websocket unavailable, falling back to HTTP polling`,
+                        `upstream ${u.name} websocket unavailable${detail !== undefined ? ` (${detail})` : ""}, falling back to HTTP polling`,
                       );
                     }
                   }
