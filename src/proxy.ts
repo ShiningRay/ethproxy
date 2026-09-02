@@ -242,8 +242,17 @@ export class ProxyHandler {
     return response;
   }
 
+  /**
+   * Cache counters with the hit rate computed over ALL locally served
+   * responses: direct local answers (eth_blockNumber, block filters) count
+   * as hits alongside real cache hits. Raw hits/misses stay cache-only.
+   */
   cacheStats(): CacheStats {
-    return this.cache.stats();
+    const stats = this.cache.stats();
+    const local = this.localAnswers.blockNumber + this.localAnswers.filters;
+    const hits = stats.hits + local;
+    const lookups = hits + stats.misses;
+    return { ...stats, hitRate: lookups === 0 ? 0 : hits / lookups };
   }
 
   /**

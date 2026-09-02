@@ -58,7 +58,7 @@ export function renderIndexPage(meta: IndexPageMeta): string {
     <div class="card"><div class="label">Cache Backend</div><div class="value">${meta.cacheBackend}</div></div>
   </div>
   <div class="cards">
-    <div class="card"><div class="label">Cache Hit Rate</div><div class="value" id="hitRate">–</div></div>
+    <div class="card"><div class="label">Hit Rate (incl. local)</div><div class="value" id="hitRate">–</div></div>
     <div class="card"><div class="label">Cache Hits</div><div class="value ok" id="hits">–</div></div>
     <div class="card"><div class="label">Cache Misses</div><div class="value" id="misses">–</div></div>
     <div class="card"><div class="label">Cache Stores</div><div class="value" id="sets">–</div></div>
