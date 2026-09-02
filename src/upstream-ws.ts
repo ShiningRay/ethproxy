@@ -88,6 +88,14 @@ export class UpstreamWsConnection {
         resolve();
       };
       const timer = setTimeout(() => {
+        if (confirmed > 0) {
+          // Some feeds were never answered at all — a server silently
+          // dropping an unsupported subscription instead of rejecting it.
+          // The confirmed feeds work fine; keep the connection rather than
+          // flap it. The unanswered kinds simply stay unrouted.
+          finish();
+          return;
+        }
         teardownReason = `connect/subscribe timeout after ${this.timeoutMs}ms`;
         ws.terminate();
       }, this.timeoutMs);

@@ -89,15 +89,22 @@ async function startHttpMock(
 }
 
 /** WS endpoint accepting eth_subscribe("newHeads") and pushing heads on demand. */
-async function startWsMock() {
+async function startWsMock(opts: { silentOn?: string[] } = {}) {
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   const sockets = new Set<WebSocket>();
   wss.on("connection", (ws) => {
     sockets.add(ws);
     ws.on("close", () => sockets.delete(ws));
     ws.on("message", (data) => {
-      const req = JSON.parse(data.toString()) as { id: number; method: string };
+      const req = JSON.parse(data.toString()) as {
+        id: number;
+        method: string;
+        params?: unknown[];
+      };
       if (req.method === "eth_subscribe") {
+        // Simulate a server that silently drops unsupported subscriptions
+        // instead of rejecting them (no response at all).
+        if (opts.silentOn?.includes(req.params?.[0] as string)) return;
         ws.send(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: "0xsub1" }));
         return;
       }
@@ -197,6 +204,30 @@ describe("newHeads subscription", () => {
     await pool.pollAll();
     expect(pool.chainHead).toBe(1007);
   });
+
+  it("keeps the connection when a server silently ignores one subscription kind", async () => {
+    const http = await startHttpMock(1000);
+    // Never answers newPendingTransactions: the mirror feed stays unconfirmed.
+    const ws = await startWsMock({ silentOn: ["newPendingTransactions"] });
+    const pool = new UpstreamPool(
+      [{ name: "a", url: http.url, wsUrl: ws.url, weight: 1 }],
+      health,
+      undefined,
+      undefined,
+      { mirror: true }, // txpool mirror -> two subscription kinds on one socket
+    );
+    cleanups.push(async () => pool.stop());
+
+    await pool.pollAll();
+    await waitFor(() => ws.socketCount() === 1);
+    // Well past the connect/subscribe timeout: the connection must survive
+    // on the confirmed newHeads feed alone instead of flapping.
+    await new Promise((r) => setTimeout(r, 6000));
+    expect(ws.socketCount()).toBe(1);
+    expect(pool.status().upstreams[0]!.wsHealthy).toBe(true);
+    ws.pushHead(1011);
+    await waitFor(() => pool.chainHead === 1011);
+  }, 10000);
 
   it("keeps the connection alive with client-side ping enabled", async () => {
     const http = await startHttpMock(1000);
