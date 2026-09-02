@@ -16,6 +16,7 @@ async function main(): Promise<void> {
     config.chainId,
     config.txpool,
     config.syncing,
+    config.reorg,
   );
   pool.start();
 

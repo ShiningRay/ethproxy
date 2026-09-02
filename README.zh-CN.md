@@ -9,6 +9,7 @@ Ethereum JSON-RPC 反向代理：多上游负载均衡与故障转移、同步�
 - **多上游**：加权 round-robin；传输层失败自动切换到下一个健康节点（`eth_sendRawTransaction` 等有副作用的方法不重试）
 - **健康与同步检查**：后台主动轮询 `eth_syncing` + `eth_blockNumber` + `eth_chainId`；同步中、连续失败超过阈值、或落后池内最大高度超过 `maxBlockLag` 的节点会被摘除，恢复后自动重新入池
 - **newHeads 链高跟踪**：上游 WS 可用时，池为其维持一条持久的 `eth_subscribe("newHeads")` 连接，每收到通知即更新本地观测链高（断线指数退避重连）；WS 不可用或断开时自动回退为 HTTP 健康轮询获取块高。可用 `health.wsHeads: false` 关闭（块高仅来自 HTTP 轮询，WS 可用性改为每轮探测）
+- **重组检测**：对每个去重后的 newHeads 校验 parentHash 与近期区块头滑动窗口（`reorg.windowSize`，默认 128）的连续性。冲突先仲裁后告警——分歧头只有在被后续块接续、或被第二个不同上游报出相同哈希时才判定为重组，短暂不一致的节点不会产生误报。确认的重组会记录深度与分叉区间日志，计入 `ethproxy_reorgs_detected_total` / `ethproxy_reorg_depth` 指标，并经 `pool.onReorg` 广播。依赖 `health.wsHeads`（HTTP 轮询拿不到块哈希）
 - **新区块缓存加热**：每个 newHeads 推送都会被写入响应缓存，效果等同于刚应答过对应的 `eth_getBlockByNumber`/`eth_getBlockByHash`（推送只有区块头时，向推送方节点后台补拉一次完整块；推送自带交易列表时直接缓存）。条目使用链头短 TTL，重组的头块会很快过期；多个上游重复推送同一区块按哈希去重，只补拉一次
 - **链一致性保护**：配置 `chainId` 后，报告其他链 ID 的节点直接摘除，防止误配不同链的上游；未配置时自动采用多数节点的 chainId 作为基准
 - **分级缓存**（不是无脑缓存）：
@@ -60,12 +61,14 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `health.maxRetries` | 单请求最多尝试几个上游 | 2 |
 | `health.retryBaseDelayMs` / `retryMaxDelayMs` | 重试指数退避：`base * 2^(n-1)`，封顶 max | 100 / 1000 |
 | `health.wsHeads` | 通过持久的 `eth_subscribe("newHeads")` WS 连接跟踪链高（WS 断开时回退 HTTP 轮询）；`false` = 仅 HTTP 轮询 + 每轮探测 WS 可用性 | true |
+| `reorg.enabled` / `reorg.windowSize` | 基于上游 newHeads 的重组检测：校验 parentHash 与滑动区块头窗口的连续性，跨上游仲裁（冲突分支被后续块接续或被第二个上游证实才判定）；确认的重组记录日志、计入指标（`ethproxy_reorgs_detected_total`、`ethproxy_reorg_depth`）并经 `pool.onReorg` 广播。依赖 `health.wsHeads` | true / 128 |
 | `filters.stickyTtlMs` | filter 粘滞路由映射的空闲 TTL，每次轮询刷新 | 300000 |
 | `txpool.mirror` | 本地 pending 交易镜像：池为每个 WS 可用的上游维持 `eth_subscribe("newPendingTransactions")` 订阅，客户端订阅改由代理本地应答（哈希去重后扇出）；`false` = 透传上游 | false |
 | `syncing.mirror` | 本地应答 `eth_subscribe("syncing")`，按池聚合视图：任一上游同步中即返回 syncing（带进度对象），全部同步完回 false（订阅后立即回当前状态，之后只在变化时推送）；`false` = 透传上游 | false |
 | `cache.backend` | `memory` 或 `redis` | `memory` |
 | `cache.enabled` | 缓存总开关，`false` 时所有请求绕过缓存（也不再连接 Redis） | true |
 | `cache.shortTtlMs` | 链头相关数据 TTL（dynamicTtl 开启时为上限/回退值） | 2000 |
+| `cache.unfinalizedTtlMs` | 7 个重组校验方法未定型条目的兜底 TTL（正确性由读时重组校验保证） | 900000 |
 | `cache.dynamicTtl` | 按观测出块间隔动态调整短 TTL（间隔/4，钳制在 `[minTtlMs, shortTtlMs]`） | true |
 | `cache.finalityDepth` | 多少块深度视为不可变 | 64 |
 | `cache.redis.url` / `keyPrefix` | Redis 连接与键前缀 | — |
@@ -79,7 +82,9 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 
 ## 缓存策略细节
 
-判定逻辑在 [`src/cache-rules.ts`](src/cache-rules.ts)：`requestPolicy(method, params, ctx)` 在请求阶段决定能否缓存，`responseTtl()` 依据响应内容修正（例如 `eth_getTransactionReceipt` 只有含 `blockHash` 才永久缓存，`null` 只给极短 TTL）。缓存键为 `method + sha256(规范化 params)`。
+判定逻辑在 [`src/cache-rules.ts`](src/cache-rules.ts)：`requestPolicy(method, params, ctx)` 在请求阶段决定能否缓存，`responseTtl()` 依据响应内容修正（例如 `eth_getTransactionReceipt` 只有含 `blockHash` 才永久缓存，`null` 只给极短 TTL）。缓存键为 `method + sha256(规范化 params)`，下述 7 个重组校验方法除外。
+
+**重组校验条目**（`eth_getBlockByNumber`、`eth_getBlockTransactionCountByNumber`、`eth_getTransactionByBlockNumberAndIndex`、`eth_getUncleByBlockNumberAndIndex`、`eth_getUncleCountByBlockNumber`、`eth_getTransactionByHash`、`eth_getTransactionReceipt`）：这些方法使用明文 key——`方法名:规范化参数`，数量型参数统一为小写最小十六进制——外部系统可直接构造 key 查询或失效条目。低于 `cache.finalityDepth` 的条目以 `cache.unfinalizedTtlMs` 存储（而非短 TTL），并盖有写入时观测到的规范块哈希戳；每次读取时与重组检测器的区块头窗口比对，被重组的条目在下一次读取时变为 miss（并被删除）——失效由重组检测驱动而非 TTL。无法校验的条目（窗口断缝、检测关闭）退化为纯 TTL 语义。依赖 `health.wsHeads` 与 `reorg.enabled`；`reorg.windowSize` 必须 ≥ `cache.finalityDepth`（配置加载时强制校验）。
 
 ## 扩展缓存后端
 

@@ -66,6 +66,19 @@ const chainHead = new Gauge({
   registers: [registry],
 });
 
+export const reorgsDetected = new Counter({
+  name: "ethproxy_reorgs_detected_total",
+  help: "Chain reorganizations confirmed from upstream head announcements",
+  registers: [registry],
+});
+
+export const reorgDepth = new Histogram({
+  name: "ethproxy_reorg_depth",
+  help: "Number of replaced blocks per confirmed reorg (lower bound when inexact)",
+  buckets: [1, 2, 3, 5, 8, 13, 21, 34],
+  registers: [registry],
+});
+
 const cacheHits = new Gauge({
   name: "ethproxy_cache_hits_total",
   help: "Cache hits since process start",

@@ -118,6 +118,7 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
       enabled: true,
       backend: "memory",
       shortTtlMs: 60000, // long enough for deterministic assertions
+      unfinalizedTtlMs: 900000,
       pendingTtlMs: 1000,
       dynamicTtl: false, // static TTL keeps tests deterministic
       minTtlMs: 200,
@@ -141,6 +142,7 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
     filters: { stickyTtlMs: 300000 },
     txpool: { mirror: false },
     syncing: { mirror: false },
+    reorg: { enabled: true, windowSize: 128 },
     cors: { enabled: true, origin: "*" },
   };
   const pool = new UpstreamPool(config.upstreams, config.health);

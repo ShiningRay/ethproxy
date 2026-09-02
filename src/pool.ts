@@ -1,5 +1,7 @@
-import type { HealthConfig, SyncingConfig, TxpoolConfig, UpstreamConfig } from "./config.js";
+import type { HealthConfig, ReorgConfig, SyncingConfig, TxpoolConfig, UpstreamConfig } from "./config.js";
+import { reorgDepth, reorgsDetected } from "./metrics.js";
 import { parseQuantity, type JsonRpcResponse } from "./rpc.js";
+import { ReorgDetector, type ReorgEvent } from "./reorg.js";
 import {
   Upstream,
   upstreamWsUrl,
@@ -31,6 +33,14 @@ export class UpstreamPool {
   >();
   /** Hash of the most recently announced head, for cross-upstream dedupe. */
   private lastAnnouncedHeadHash: string | null = null;
+
+  /**
+   * Reorg detector fed with every distinct announced head. Only present
+   * when reorg detection is enabled and heads carry hash+parentHash (i.e.
+   * health.wsHeads is on); plain HTTP polls see block numbers only.
+   */
+  private readonly reorgDetector: ReorgDetector | null;
+  private readonly reorgListeners = new Set<(event: ReorgEvent) => void>();
 
   /**
    * Local pending-transaction mirror: hashes recently announced by upstreams
@@ -87,6 +97,37 @@ export class UpstreamPool {
     return () => {
       this.headListeners.delete(listener);
     };
+  }
+
+  /**
+   * The canonical hash recorded at height `n` by the reorg detector, or
+   * null when unknown (detector disabled, or the window does not cover the
+   * height). Used by the response cache for read-time reorg validation.
+   */
+  canonicalHashAt(n: number): string | null {
+    return this.reorgDetector?.canonicalHashAt(n) ?? null;
+  }
+
+  /**
+   * Register a listener fired for every confirmed chain reorganization.
+   * Returns an unsubscribe function.
+   */
+  onReorg(listener: (event: ReorgEvent) => void): () => void {
+    this.reorgListeners.add(listener);
+    return () => {
+      this.reorgListeners.delete(listener);
+    };
+  }
+
+  private announceReorg(event: ReorgEvent): void {
+    reorgsDetected.inc();
+    reorgDepth.observe(event.depth);
+    this.logger?.warn(
+      `chain reorg detected: heights ${event.fromNumber}..${event.toNumber} replaced ` +
+        `(depth ${event.depth}${event.exact ? "" : "+"}), new head ${event.newHash}` +
+        (event.oldHash !== null ? `, old head ${event.oldHash}` : ""),
+    );
+    for (const listener of this.reorgListeners) listener(event);
   }
 
   /**
@@ -161,10 +202,15 @@ export class UpstreamPool {
     private readonly expectedChainId?: number,
     private readonly txpool: TxpoolConfig = { mirror: false },
     private readonly syncing: SyncingConfig = { mirror: false },
+    reorg: ReorgConfig = { enabled: true, windowSize: 128 },
   ) {
     this.upstreams = upstreamConfigs.map(
       (c) => new Upstream(c, health.requestTimeoutMs),
     );
+    this.reorgDetector =
+      reorg.enabled && health.wsHeads
+        ? new ReorgDetector({ windowSize: reorg.windowSize })
+        : null;
     // The persistent per-upstream WS connection exists when it carries at
     // least one feed (heads, the pending-tx mirror and/or the syncing
     // mirror). With all disabled, WS availability is detected by a
@@ -193,6 +239,22 @@ export class UpstreamPool {
                   const hash = typeof head.hash === "string" ? head.hash : null;
                   if (hash !== null && hash === this.lastAnnouncedHeadHash) return;
                   if (hash !== null) this.lastAnnouncedHeadHash = hash;
+                  // Reorg detection needs hash + parentHash; heads lacking
+                  // either (defensive: non-standard upstreams) are skipped.
+                  const parentHash =
+                    typeof head.parentHash === "string" ? head.parentHash : null;
+                  if (
+                    this.reorgDetector !== null &&
+                    hash !== null &&
+                    parentHash !== null
+                  ) {
+                    for (const event of this.reorgDetector.observe(
+                      { number: blockNumber, hash, parentHash },
+                      u.name,
+                    )) {
+                      this.announceReorg(event);
+                    }
+                  }
                   for (const listener of this.headListeners) listener(head, u.name);
                 },
                 onPendingTx: (hash) => this.announcePendingTx(hash),
