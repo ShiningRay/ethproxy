@@ -477,6 +477,33 @@ describe("local block filters", () => {
       jsonrpc: "2.0", id: 6, method: "eth_getFilterChanges", params: [filterId],
     });
     expect(after).toMatchObject({ id: 6, error: { code: -32000 } });
+
+    // All six filter calls were answered locally: create + 4 polls + uninstall.
+    expect(proxy.localStats().filters).toBe(6);
+  });
+
+  it("counts locally answered eth_blockNumber in localStats", async () => {
+    const http = await startHttpMock(1000);
+    const config = makeConfig({ name: "a", url: http.url });
+    const pool = new UpstreamPool(config.upstreams, config.health);
+    const proxy = makeProxyWith(config, pool);
+    await pool.pollAll();
+
+    const before = proxy.localStats();
+    const upstreamCallsBefore = http.hits.get("eth_blockNumber") ?? 0;
+    const res = await proxy.handle({
+      jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [],
+    });
+    expect(res).toMatchObject({ id: 1, result: "0x3e8" });
+    // The client request added no upstream call (the health poll's own
+    // eth_blockNumber calls aside).
+    expect(http.hits.get("eth_blockNumber") ?? 0).toBe(upstreamCallsBefore);
+
+    const afterStats = proxy.localStats();
+    expect(afterStats.blockNumber).toBe(before.blockNumber + 1);
+    expect(afterStats.total).toBe(
+      afterStats.cacheHits + afterStats.blockNumber + afterStats.filters,
+    );
   });
 
   it("falls back to sticky routing when wsHeads is disabled", async () => {
