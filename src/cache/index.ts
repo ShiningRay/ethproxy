@@ -17,6 +17,62 @@ export function cacheKey(method: string, params: unknown[]): string {
   return `${method}:${digest}`;
 }
 
+/**
+ * Plain-text cache key for the reorg-validated methods (see RAW_KEY_METHODS
+ * in cache-rules.ts): params are embedded in the clear — after normalization
+ * — so external tooling can construct keys to read or invalidate entries
+ * without replicating the hashing. `params` must already be normalized.
+ */
+export function rawCacheKey(method: string, normalizedParams: unknown[]): string {
+  return `${method}:${stableStringify(normalizedParams)}`;
+}
+
+/**
+ * Wrapper for number-keyed entries subject to read-time reorg validation:
+ * the payload is stored alongside the height and the canonical block hash
+ * observed at write time. On read, the hash is compared against the reorg
+ * detector's header window; a mismatch means the entry's height was reorged
+ * and the entry is stale.
+ */
+export interface ValidatedEntry {
+  /** Block height the payload answers for. */
+  h: number;
+  /** Canonical hash at write time; null = unverifiable, trusted as-is. */
+  b: string | null;
+  /** The actual JSON-RPC result payload. */
+  d: unknown;
+}
+
+export function wrapValidatedEntry(
+  height: number,
+  blockHash: string | null,
+  payload: unknown,
+): string {
+  const entry: ValidatedEntry = { h: height, b: blockHash, d: payload };
+  return JSON.stringify(entry);
+}
+
+/**
+ * Parse a stored value as a ValidatedEntry, or null when it is a plain
+ * (unwrapped) payload. Distinguishes by the {h, b, d} shape, which no plain
+ * RPC payload carries.
+ */
+export function parseValidatedEntry(raw: string): ValidatedEntry | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.h !== "number" || !("b" in obj) || !("d" in obj)) return null;
+  if (obj.b !== null && typeof obj.b !== "string") return null;
+  return { h: obj.h, b: obj.b, d: obj.d };
+}
+
 /** No-op backend used when caching is disabled: never stores, never connects anywhere. */
 class NullCacheBackend implements CacheBackend {
   async get(): Promise<string | null> {
@@ -92,6 +148,15 @@ export class ResponseCache {
     } catch (err) {
       this.errors += 1;
       this.logger?.warn("cache set failed, entry skipped", err);
+    }
+  }
+
+  async delete(key: string): Promise<void> {
+    try {
+      await this.backend.delete(key);
+    } catch (err) {
+      this.errors += 1;
+      this.logger?.warn("cache delete failed", err);
     }
   }
 

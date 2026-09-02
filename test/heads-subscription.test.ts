@@ -229,6 +229,7 @@ function makeConfig(upstream: { name: string; url: string; wsUrl?: string }): Co
       enabled: true,
       backend: "memory",
       shortTtlMs: 60000,
+      unfinalizedTtlMs: 900000,
       pendingTtlMs: 1000,
       dynamicTtl: false,
       minTtlMs: 200,
@@ -252,6 +253,7 @@ function makeConfig(upstream: { name: string; url: string; wsUrl?: string }): Co
     filters: { stickyTtlMs: 300000 },
     txpool: { mirror: false },
     syncing: { mirror: false },
+    reorg: { enabled: true, windowSize: 128 },
     cors: { enabled: true, origin: "*" },
   };
 }

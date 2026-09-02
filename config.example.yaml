@@ -60,6 +60,13 @@ syncing:
                             # 之后只在聚合状态变化时推送）。状态来自上游 WS syncing 订阅，
                             # HTTP 健康轮询作回退；与 wsHeads 共用每上游一条的持久 WS 连接。默认关闭
 
+reorg:
+  enabled: true             # 基于上游 newHeads 的 parentHash 连续性检测链上重组；确认的重组会记录日志、
+                            # 计入指标（ethproxy_reorgs_detected_total / ethproxy_reorg_depth）并经 pool.onReorg 广播。
+                            # 需要 wsHeads 开启（HTTP 轮询拿不到块哈希）。单点上游的短暂分歧会被仲裁过滤，
+                            # 只有冲突分支被后续块接续或被第二个上游证实才判定为重组
+  windowSize: 128           # 用于定位分叉点的近期区块头滑动窗口大小（过浅的窗口会让重组深度只报下界）
+
 cors:
   enabled: true             # 跨域支持（浏览器 DApp 需要）
   origin: "*"               # "*" 允许任意域；多个域用逗号分隔，如 "https://a.com, https://b.com"
@@ -69,6 +76,8 @@ cache:
   backend: memory           # memory | redis（可扩展其他后端）
   shortTtlMs: 2000          # 链头相关数据的短 TTL（dynamicTtl 开启时作为上限与初始回退值）
   pendingTtlMs: 1000        # 未打包交易收据等的极短 TTL
+  unfinalizedTtlMs: 900000  # 7 个重组校验方法（按块高取块/数量/叔块 + 按哈希取交易/收据）未定型条目的兜底 TTL；
+                            # 正确性由读取时对照重组检测器窗口校验保证，此 TTL 只约束窗口无法担保的条目寿命
   dynamicTtl: true          # 按观测到的出块间隔动态调整短 TTL（间隔/4，钳制在 [minTtlMs, shortTtlMs]）
   minTtlMs: 200             # 动态 TTL 下限
   finalityDepth: 64         # 区块号 ≤ 链头 - finalityDepth 视为不可变，永久缓存

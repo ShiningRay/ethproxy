@@ -19,6 +19,11 @@ services:
     container_name: ethproxy-redis
     restart: unless-stopped
     profiles: ["redis"]
+    command:
+      - redis-server
+      - --maxmemory 256mb
+      - --maxmemory-policy allkeys-lru
+      - --appendonly yes
     volumes:
       - redis-data:/data
     healthcheck:

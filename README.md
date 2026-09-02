@@ -9,6 +9,7 @@ A reverse proxy for Ethereum JSON-RPC: multi-upstream weighted load balancing wi
 - **Multiple upstreams**: weighted round-robin; automatic failover to the next healthy node on transport errors (side-effecting methods like `eth_sendRawTransaction` are never retried)
 - **Health & sync checks**: background polling of `eth_syncing` + `eth_blockNumber` + `eth_chainId`; nodes that are syncing, exceed the consecutive-failure threshold, or lag the pool head by more than `maxBlockLag` are removed and rejoin automatically once recovered
 - **newHeads head tracking**: when an upstream has a working WS endpoint, the pool keeps a persistent `eth_subscribe("newHeads")` connection and updates the observed chain head from each notification (reconnects with backoff); when WS is unavailable or drops, head tracking falls back to the HTTP health poll automatically. Can be turned off with `health.wsHeads: false` (heads then come from HTTP polling only, WS availability via per-poll probe)
+- **Reorg detection**: every distinct announced head is checked for parentHash continuity against a sliding window of recent headers (`reorg.windowSize`, default 128). Conflicts are arbitrated before alarming — a divergent head only becomes a confirmed reorg when the chain builds on top of it or a second distinct upstream reports the same hash, so a briefly-disagreeing node produces no false positives. Confirmed reorgs are logged with depth and fork range, counted in `ethproxy_reorgs_detected_total` / `ethproxy_reorg_depth`, and fanned out via `pool.onReorg`. Requires `health.wsHeads` (HTTP polling sees block numbers only)
 - **Head block cache warming**: every newHeads payload is warmed into the response cache as if `eth_getBlockByNumber`/`eth_getBlockByHash` had just been served for the new head (header-only notifications trigger one background `eth_getBlockByHash` fetch against the announcing upstream; payloads carrying transactions are cached directly). Entries use the short head TTL so a reorged head expires quickly, and duplicate announcements across upstreams are deduped by block hash
 - **Chain consistency guard**: with `chainId` configured, upstreams reporting a different chain id are excluded outright (protects against misconfigured nodes on other chains); without it, the majority chain id is adopted as the reference
 - **Tiered caching** (not blind caching):
@@ -60,12 +61,14 @@ See [config.example.yaml](config.example.yaml). Key options:
 | `health.maxRetries` | Upstreams tried per request | 2 |
 | `health.retryBaseDelayMs` / `retryMaxDelayMs` | Exponential retry backoff: `base * 2^(n-1)`, capped at max | 100 / 1000 |
 | `health.wsHeads` | Track chain heads via a persistent `eth_subscribe("newHeads")` WS connection per upstream (HTTP poll fallback while WS is down); `false` = HTTP-only heads + per-poll WS probe | true |
+| `reorg.enabled` / `reorg.windowSize` | Reorg detection from upstream newHeads: parentHash continuity against a sliding header window, arbitrated across upstreams (a conflict confirms only when the chain builds on it or a second upstream reports it); confirmed reorgs are logged, counted (`ethproxy_reorgs_detected_total`, `ethproxy_reorg_depth`) and fanned out via `pool.onReorg`. Requires `health.wsHeads` | true / 128 |
 | `filters.stickyTtlMs` | Idle TTL for sticky filter-id mappings; refreshed on every poll | 300000 |
 | `txpool.mirror` | Mirror pending transactions: the pool keeps an `eth_subscribe("newPendingTransactions")` feed per WS-capable upstream and serves client subscriptions locally (deduped hashes); `false` = pass through | false |
 | `syncing.mirror` | Mirror sync status: serve client `eth_subscribe("syncing")` locally from the aggregated pool view — syncing (progress object) while ANY upstream is syncing, false once none are (immediate answer on subscribe, then changes only); `false` = pass through | false |
 | `cache.backend` | `memory` or `redis` | `memory` |
 | `cache.enabled` | Master switch; when `false` every request bypasses the cache (and Redis is never connected) | true |
 | `cache.shortTtlMs` | TTL for head-dependent data (ceiling/fallback when dynamicTtl is on) | 2000 |
+| `cache.unfinalizedTtlMs` | Fallback TTL for the seven reorg-validated methods' entries below finalityDepth (correctness comes from read-time reorg validation) | 900000 |
 | `cache.dynamicTtl` | Derive short TTL from the observed block interval (interval/4, clamped to `[minTtlMs, shortTtlMs]`) | true |
 | `cache.finalityDepth` | Depth below which blocks are treated as immutable | 64 |
 | `cache.redis.url` / `keyPrefix` | Redis connection and key prefix | — |
@@ -79,7 +82,9 @@ See [config.example.yaml](config.example.yaml). Key options:
 
 ## Caching details
 
-The decision logic lives in [`src/cache-rules.ts`](src/cache-rules.ts): `requestPolicy(method, params, ctx)` decides cacheability at request time, and `responseTtl()` refines it based on the response (e.g. `eth_getTransactionReceipt` is cached permanently only when it carries a `blockHash`; a `null` result gets a very short TTL). Cache keys are `method + sha256(normalized params)`.
+The decision logic lives in [`src/cache-rules.ts`](src/cache-rules.ts): `requestPolicy(method, params, ctx)` decides cacheability at request time, and `responseTtl()` refines it based on the response (e.g. `eth_getTransactionReceipt` is cached permanently only when it carries a `blockHash`; a `null` result gets a very short TTL). Cache keys are `method + sha256(normalized params)`, except the seven reorg-validated methods below.
+
+**Reorg-validated entries** (`eth_getBlockByNumber`, `eth_getBlockTransactionCountByNumber`, `eth_getTransactionByBlockNumberAndIndex`, `eth_getUncleByBlockNumberAndIndex`, `eth_getUncleCountByBlockNumber`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`): these use plain-text keys — `method:normalized-params` with quantities canonicalized to minimal lowercase hex — so external tooling can build keys to read or invalidate entries directly. Entries below `cache.finalityDepth` are stored with `cache.unfinalizedTtlMs` instead of the short TTL, stamped with the canonical block hash observed at write time; on every read the stamp is checked against the reorg detector's header window, so a reorged entry turns into a miss (and is deleted) the next time it is read — invalidation is driven by reorg detection, not by TTL. Entries that cannot be validated (window gap, detection disabled) fall back to plain TTL semantics. Requires `health.wsHeads` and `reorg.enabled`; `reorg.windowSize` must be ≥ `cache.finalityDepth` (enforced at config load).
 
 ## Extending cache backends
 

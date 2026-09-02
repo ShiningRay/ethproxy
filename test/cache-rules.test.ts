@@ -5,6 +5,7 @@ const ctx: CacheRuleContext = {
   chainHead: 1000,
   shortTtlMs: 2000,
   pendingTtlMs: 1000,
+  unfinalizedTtlMs: 900000,
   finalityDepth: 64,
 };
 
@@ -29,9 +30,15 @@ describe("requestPolicy", () => {
     });
   });
 
-  it("short-caches block-number queries near the head", () => {
+  it("stamps block-number queries near the head with the unfinalized TTL", () => {
     // 990 > 1000 - 64
     expect(requestPolicy("eth_getBlockByNumber", ["0x3de"], ctx)).toEqual({
+      cacheable: true,
+      ttlMs: 900000,
+      stampHeight: 990,
+    });
+    // state methods keep the short TTL near the head
+    expect(requestPolicy("eth_getBalance", ["0xaddr", "0x3de"], ctx)).toEqual({
       cacheable: true,
       ttlMs: 2000,
     });
@@ -125,6 +132,12 @@ describe("requestPolicy", () => {
     const noHead = { ...ctx, chainHead: null };
     expect(requestPolicy("eth_getBlockByNumber", ["0x10"], noHead)).toEqual({
       cacheable: true,
+      ttlMs: 900000,
+      stampHeight: 16,
+    });
+    // state methods still fall back to the short TTL
+    expect(requestPolicy("eth_getBalance", ["0xaddr", "0x10"], noHead)).toEqual({
+      cacheable: true,
       ttlMs: 2000,
     });
   });
@@ -141,5 +154,55 @@ describe("responseTtl", () => {
   it("permanently caches found hash-keyed data, briefly caches null", () => {
     expect(responseTtl("eth_getTransactionByHash", { hash: "0x1" }, ctx)).toBeNull();
     expect(responseTtl("eth_getTransactionByHash", null, ctx)).toBe(1000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+import { rawCacheKey } from "../src/cache/index.js";
+import { normalizeRawKeyParams, RAW_KEY_METHODS } from "../src/cache-rules.js";
+
+describe("raw cache keys", () => {
+  it("embeds normalized params in plain text for the validated methods", () => {
+    const key = rawCacheKey(
+      "eth_getBlockByNumber",
+      normalizeRawKeyParams("eth_getBlockByNumber", ["0x3e9", false]),
+    );
+    expect(key).toBe('eth_getBlockByNumber:["0x3e9",false]');
+  });
+
+  it("canonicalizes quantities to minimal lowercase hex", () => {
+    const a = rawCacheKey(
+      "eth_getTransactionByBlockNumberAndIndex",
+      normalizeRawKeyParams("eth_getTransactionByBlockNumberAndIndex", ["0x03E9", "0x00"]),
+    );
+    expect(a).toBe('eth_getTransactionByBlockNumberAndIndex:["0x3e9","0x0"]');
+    // block tags pass through untouched
+    const b = rawCacheKey(
+      "eth_getBlockByNumber",
+      normalizeRawKeyParams("eth_getBlockByNumber", ["safe", false]),
+    );
+    expect(b).toBe('eth_getBlockByNumber:["safe",false]');
+  });
+
+  it("lowercases transaction hashes without stripping zeros", () => {
+    const hash = "0x00ABCDEF0123456789";
+    const key = rawCacheKey(
+      "eth_getTransactionReceipt",
+      normalizeRawKeyParams("eth_getTransactionReceipt", [hash]),
+    );
+    expect(key).toBe('eth_getTransactionReceipt:["0x00abcdef0123456789"]');
+  });
+
+  it("covers exactly the seven reorg-validated methods", () => {
+    expect([...RAW_KEY_METHODS].sort()).toEqual([
+      "eth_getBlockByNumber",
+      "eth_getBlockTransactionCountByNumber",
+      "eth_getTransactionByBlockNumberAndIndex",
+      "eth_getTransactionByHash",
+      "eth_getTransactionReceipt",
+      "eth_getUncleByBlockNumberAndIndex",
+      "eth_getUncleCountByBlockNumber",
+    ]);
   });
 });

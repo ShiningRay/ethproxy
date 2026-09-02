@@ -35,6 +35,14 @@ const cacheSchema = z.object({
   shortTtlMs: z.number().int().positive().default(2000),
   pendingTtlMs: z.number().int().positive().default(1000),
   /**
+   * Fallback TTL for number-keyed entries below finalityDepth (the seven
+   * reorg-validated methods). Correctness comes from read-time validation
+   * against the reorg detector's header window; this TTL only bounds the
+   * lifetime of entries the window can no longer vouch for (e.g. written
+   * across a WS-reconnect gap).
+   */
+  unfinalizedTtlMs: z.number().int().positive().default(900000),
+  /**
    * When enabled, the short TTL is derived from the observed block interval
    * (blockInterval / 4, clamped to [minTtlMs, shortTtlMs]). shortTtlMs then
    * acts as the ceiling and as the fallback before an estimate exists.
@@ -103,6 +111,19 @@ const syncingSchema = z.object({
   mirror: z.boolean().default(false),
 });
 
+const reorgSchema = z.object({
+  /**
+   * Detect chain reorganizations from upstream newHeads announcements by
+   * checking parentHash continuity against a sliding window of recent
+   * headers. Confirmed reorgs are logged, counted in metrics and fanned out
+   * via pool.onReorg. Requires health.wsHeads (heads carrying hash and
+   * parentHash); with plain HTTP polling no hashes are seen.
+   */
+  enabled: z.boolean().default(true),
+  /** Sliding window of recent headers kept for fork-point lookup. */
+  windowSize: z.number().int().min(16).default(128),
+});
+
 const filtersSchema = z.object({
   /**
    * Idle TTL for proxy-side filter id mappings (sticky routing). Aligned
@@ -151,7 +172,18 @@ const configSchema = z.object({
   filters: filtersSchema.default({}),
   txpool: txpoolSchema.default({}),
   syncing: syncingSchema.default({}),
+  reorg: reorgSchema.default({}),
   cors: corsSchema.default({}),
+}).superRefine((cfg, ctx) => {
+  // Read-time reorg validation is only sound when every unfinalized cached
+  // height is covered by the detector's header window.
+  if (cfg.reorg.enabled && cfg.reorg.windowSize < cfg.cache.finalityDepth) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["reorg", "windowSize"],
+      message: `must be >= cache.finalityDepth (${cfg.cache.finalityDepth}) when reorg detection is enabled`,
+    });
+  }
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -163,6 +195,7 @@ export type RateLimitConfig = z.infer<typeof rateLimitSchema>;
 export type FiltersConfig = z.infer<typeof filtersSchema>;
 export type TxpoolConfig = z.infer<typeof txpoolSchema>;
 export type SyncingConfig = z.infer<typeof syncingSchema>;
+export type ReorgConfig = z.infer<typeof reorgSchema>;
 export type CorsConfig = z.infer<typeof corsSchema>;
 
 export function loadConfig(path: string): Config {

@@ -1,5 +1,19 @@
-import { cacheKey, ResponseCache, type CacheStats } from "./cache/index.js";
-import { requestPolicy, responseTtl, type CacheRuleContext, type RequestPolicy } from "./cache-rules.js";
+import {
+  cacheKey,
+  parseValidatedEntry,
+  rawCacheKey,
+  ResponseCache,
+  wrapValidatedEntry,
+  type CacheStats,
+} from "./cache/index.js";
+import {
+  normalizeRawKeyParams,
+  RAW_KEY_METHODS,
+  requestPolicy,
+  responseTtl,
+  type CacheRuleContext,
+  type RequestPolicy,
+} from "./cache-rules.js";
 import type { Config } from "./config.js";
 import {
   FILTER_CREATE_METHODS,
@@ -247,8 +261,60 @@ export class ProxyHandler {
         this.config.cache,
       ),
       pendingTtlMs: this.config.cache.pendingTtlMs,
+      unfinalizedTtlMs: this.config.cache.unfinalizedTtlMs,
       finalityDepth: this.config.cache.finalityDepth,
     };
+  }
+
+  /** Cache key for a request: plain-text for the reorg-validated methods, hashed otherwise. */
+  private keyFor(method: string, params: unknown[]): string {
+    return RAW_KEY_METHODS.has(method)
+      ? rawCacheKey(method, normalizeRawKeyParams(method, params))
+      : cacheKey(method, params);
+  }
+
+  /**
+   * Read a cache entry, returning the parsed payload on hit, null on miss.
+   * For the reorg-validated methods the entry is checked against the reorg
+   * detector's canonical-chain view: a height whose canonical hash no longer
+   * matches the entry's stamp was reorged — the entry is stale, deleted in
+   * the background, and reported as a miss. Entries that cannot be validated
+   * (unstamped, null stamp, window gap, detector off) are trusted as-is;
+   * the TTL remains the fallback for those.
+   */
+  private async validatedGet(method: string, key: string): Promise<unknown | null> {
+    const raw = await this.cache.get(key);
+    if (raw === null) return null;
+    if (!RAW_KEY_METHODS.has(method)) return JSON.parse(raw);
+
+    let height: number | null = null;
+    let blockHash: string | null = null;
+    let payload: unknown;
+    const wrapped = parseValidatedEntry(raw);
+    if (wrapped !== null) {
+      height = wrapped.h;
+      blockHash = wrapped.b;
+      payload = wrapped.d;
+    } else {
+      payload = JSON.parse(raw);
+      // Unwrapped payloads (finalized entries, mined tx/receipt results)
+      // carry their own block coordinates: block payloads as number/hash,
+      // transaction and receipt payloads as blockNumber/blockHash.
+      if (typeof payload === "object" && payload !== null && !Array.isArray(payload)) {
+        const obj = payload as Record<string, unknown>;
+        const bh = obj.blockHash ?? obj.hash;
+        const bn = obj.blockNumber ?? obj.number;
+        if (typeof bh === "string") {
+          blockHash = bh;
+          height = typeof bn === "string" ? parseQuantity(bn) : null;
+        }
+      }
+    }
+    if (height === null || blockHash === null) return payload;
+    const canonical = this.pool.canonicalHashAt(height);
+    if (canonical === null || canonical === blockHash) return payload;
+    void this.cache.delete(key);
+    return null;
   }
 
   /** Answer eth_blockNumber from the locally observed pool head. */
@@ -319,15 +385,22 @@ export class ProxyHandler {
    * shapes (including the omitted-flag form) require transactions as hashes;
    * the fullTx=true shapes are only written when full transaction objects
    * are present (or the block is empty, where both shapes coincide).
+   *
+   * Number-keyed entries use the plain-text key plus a validation stamp
+   * (the head's own height and hash) with the unfinalized TTL: a reorged
+   * head is then invalidated on read instead of expiring blindly. Hash-keyed
+   * entries keep the hashed key and the short head TTL.
    */
   private async storeHeadedBlock(block: Record<string, unknown>): Promise<void> {
     const hash = typeof block.hash === "string" ? block.hash : null;
     const numberHex = typeof block.number === "string" ? block.number : null;
-    if (hash === null || numberHex === null) return;
-    const ttlMs = computeShortTtlMs(
+    const blockNumber = numberHex !== null ? parseQuantity(numberHex) : null;
+    if (hash === null || numberHex === null || blockNumber === null) return;
+    const shortTtlMs = computeShortTtlMs(
       this.pool.estimatedBlockIntervalMs,
       this.config.cache,
     );
+    const unfinalizedTtlMs = this.config.cache.unfinalizedTtlMs;
 
     const txs = Array.isArray(block.transactions) ? block.transactions : [];
     const hasFullTx = txs.length > 0 && typeof txs[0] === "object" && txs[0] !== null;
@@ -340,23 +413,37 @@ export class ProxyHandler {
         }
       : block;
 
-    const entries: { method: string; params: unknown[]; value: unknown }[] = [
-      { method: "eth_getBlockByNumber", params: [numberHex], value: asHashes },
-      { method: "eth_getBlockByNumber", params: [numberHex, false], value: asHashes },
-      { method: "eth_getBlockByHash", params: [hash], value: asHashes },
-      { method: "eth_getBlockByHash", params: [hash, false], value: asHashes },
+    const numberValues: { params: unknown[]; value: unknown }[] = [
+      { params: [numberHex], value: asHashes },
+      { params: [numberHex, false], value: asHashes },
+    ];
+    const hashValues: { params: unknown[]; value: unknown }[] = [
+      { params: [hash], value: asHashes },
+      { params: [hash, false], value: asHashes },
     ];
     if (hasFullTx || txs.length === 0) {
-      entries.push(
-        { method: "eth_getBlockByNumber", params: [numberHex, true], value: block },
-        { method: "eth_getBlockByHash", params: [hash, true], value: block },
-      );
+      numberValues.push({ params: [numberHex, true], value: block });
+      hashValues.push({ params: [hash, true], value: block });
     }
-    await Promise.all(
-      entries.map((e) =>
-        this.cache.set(cacheKey(e.method, e.params), JSON.stringify(e.value), ttlMs),
+    await Promise.all([
+      ...numberValues.map((e) =>
+        this.cache.set(
+          rawCacheKey(
+            "eth_getBlockByNumber",
+            normalizeRawKeyParams("eth_getBlockByNumber", e.params),
+          ),
+          wrapValidatedEntry(blockNumber, hash, e.value),
+          unfinalizedTtlMs,
+        ),
       ),
-    );
+      ...hashValues.map((e) =>
+        this.cache.set(
+          cacheKey("eth_getBlockByHash", e.params),
+          JSON.stringify(e.value),
+          shortTtlMs,
+        ),
+      ),
+    ]);
   }
 
   private async handleBatch(
@@ -413,13 +500,13 @@ export class ProxyHandler {
           caches[index] = "miss";
           return;
         }
-        const key = cacheKey(request.method, params);
-        const cached = await this.cache.get(key);
+        const key = this.keyFor(request.method, params);
+        const cached = await this.validatedGet(request.method, key);
         if (cached !== null) {
           results[index] = {
             jsonrpc: "2.0",
             id: request.id,
-            result: JSON.parse(cached),
+            result: cached,
           };
           caches[index] = "hit";
           return;
@@ -511,11 +598,11 @@ export class ProxyHandler {
     const policy = this.policyFor(request.method, params, ctx);
 
     if (policy.cacheable) {
-      const key = cacheKey(request.method, params);
-      const cached = await this.cache.get(key);
+      const key = this.keyFor(request.method, params);
+      const cached = await this.validatedGet(request.method, key);
       if (cached !== null) {
         metrics.cacheSummary = "hit";
-        return { jsonrpc: "2.0", id: request.id, result: JSON.parse(cached) };
+        return { jsonrpc: "2.0", id: request.id, result: cached };
       }
       const { response, upstreamMs, upstreamName } = await this.fetchAndStore(
         request,
@@ -855,6 +942,16 @@ export class ProxyHandler {
         : policy.ttlMs;
     if (ttlMs === false) return;
 
-    await this.cache.set(key, JSON.stringify(response.result), ttlMs);
+    // Number-keyed entries below finalityDepth carry a validation stamp:
+    // the height plus the canonical hash observed at write time.
+    const value =
+      policy.stampHeight !== undefined
+        ? wrapValidatedEntry(
+            policy.stampHeight,
+            this.pool.canonicalHashAt(policy.stampHeight),
+            response.result,
+          )
+        : JSON.stringify(response.result);
+    await this.cache.set(key, value, ttlMs);
   }
 }
