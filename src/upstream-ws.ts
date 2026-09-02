@@ -10,6 +10,17 @@ export interface UpstreamWsCallbacks {
   onSyncing?: (status: false | Record<string, unknown>) => void;
   /** Called on WS availability transitions (subscription confirmed / lost). */
   onAvailability: (available: boolean, detail?: string) => void;
+  /**
+   * Per-feed subscription outcome, reported once per feed per connection:
+   * "rejected" when the node answers with an error, "unanswered" when the
+   * connect window closes without any response for that feed.
+   * ("confirmed" feeds are covered by onAvailability(true).)
+   */
+  onFeedIssue?: (
+    kind: SubKind,
+    status: "rejected" | "unanswered",
+    detail?: string,
+  ) => void;
 }
 
 /** Which subscriptions to hold on the persistent connection. */
@@ -20,6 +31,7 @@ export interface UpstreamWsSubscriptions {
 }
 
 type SubKind = "newHeads" | "newPendingTransactions" | "syncing";
+export type { SubKind };
 
 /**
  * Maintains one persistent WS connection to an upstream carrying the
@@ -92,7 +104,12 @@ export class UpstreamWsConnection {
           // Some feeds were never answered at all — a server silently
           // dropping an unsupported subscription instead of rejecting it.
           // The confirmed feeds work fine; keep the connection rather than
-          // flap it. The unanswered kinds simply stay unrouted.
+          // flap it. Report the unanswered kinds so the dead feed is
+          // visible in the logs instead of failing silently.
+          for (const kind of pendingByReqId.values()) {
+            this.callbacks.onFeedIssue?.(kind, "unanswered");
+          }
+          pendingByReqId.clear();
           finish();
           return;
         }
@@ -156,6 +173,7 @@ export class UpstreamWsConnection {
         let msg: {
           id?: unknown;
           result?: unknown;
+          error?: { message?: unknown };
           method?: unknown;
           params?: { subscription?: unknown; result?: unknown };
         };
@@ -176,6 +194,13 @@ export class UpstreamWsConnection {
               this.attempts = 0;
               this.callbacks.onAvailability(true);
             }
+          } else {
+            // The node actively rejected this feed (e.g. no
+            // newPendingTransactions support): surface it, but never let
+            // one rejection kill the other feeds.
+            const reason =
+              typeof msg.error?.message === "string" ? msg.error.message : undefined;
+            this.callbacks.onFeedIssue?.(kind, "rejected", reason);
           }
           // A node rejecting one feed (e.g. no newPendingTransactions
           // support) must not kill the others; only give up when every

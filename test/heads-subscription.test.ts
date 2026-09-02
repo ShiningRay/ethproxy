@@ -89,7 +89,7 @@ async function startHttpMock(
 }
 
 /** WS endpoint accepting eth_subscribe("newHeads") and pushing heads on demand. */
-async function startWsMock(opts: { silentOn?: string[] } = {}) {
+async function startWsMock(opts: { silentOn?: string[]; rejectOn?: string[] } = {}) {
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   const sockets = new Set<WebSocket>();
   wss.on("connection", (ws) => {
@@ -105,6 +105,16 @@ async function startWsMock(opts: { silentOn?: string[] } = {}) {
         // Simulate a server that silently drops unsupported subscriptions
         // instead of rejecting them (no response at all).
         if (opts.silentOn?.includes(req.params?.[0] as string)) return;
+        if (opts.rejectOn?.includes(req.params?.[0] as string)) {
+          ws.send(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: req.id,
+              error: { code: -32601, message: "subscription not supported" },
+            }),
+          );
+          return;
+        }
         ws.send(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: "0xsub1" }));
         return;
       }
@@ -209,10 +219,11 @@ describe("newHeads subscription", () => {
     const http = await startHttpMock(1000);
     // Never answers newPendingTransactions: the mirror feed stays unconfirmed.
     const ws = await startWsMock({ silentOn: ["newPendingTransactions"] });
+    const logs: string[] = [];
     const pool = new UpstreamPool(
       [{ name: "a", url: http.url, wsUrl: ws.url, weight: 1 }],
       health,
-      undefined,
+      { info: () => {}, warn: (msg) => logs.push(msg) },
       undefined,
       { mirror: true }, // txpool mirror -> two subscription kinds on one socket
     );
@@ -227,7 +238,35 @@ describe("newHeads subscription", () => {
     expect(pool.status().upstreams[0]!.wsHealthy).toBe(true);
     ws.pushHead(1011);
     await waitFor(() => pool.chainHead === 1011);
+    // The unanswered feed is surfaced in the logs.
+    expect(
+      logs.some((m) => m.includes("never answered the newPendingTransactions")),
+    ).toBe(true);
   }, 10000);
+
+  it("logs when a node rejects a subscription kind", async () => {
+    const http = await startHttpMock(1000);
+    const ws = await startWsMock({ rejectOn: ["newPendingTransactions"] });
+    const logs: string[] = [];
+    const pool = new UpstreamPool(
+      [{ name: "a", url: http.url, wsUrl: ws.url, weight: 1 }],
+      health,
+      { info: () => {}, warn: (msg) => logs.push(msg) },
+      undefined,
+      { mirror: true },
+    );
+    cleanups.push(async () => pool.stop());
+
+    await pool.pollAll();
+    await waitFor(() => ws.socketCount() === 1);
+    await waitFor(() =>
+      logs.some((m) => m.includes("rejected the newPendingTransactions subscription")),
+    );
+    // newHeads still works on the same connection.
+    expect(pool.status().upstreams[0]!.wsHealthy).toBe(true);
+    ws.pushHead(1012);
+    await waitFor(() => pool.chainHead === 1012);
+  });
 
   it("keeps the connection alive with client-side ping enabled", async () => {
     const http = await startHttpMock(1000);

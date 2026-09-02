@@ -259,6 +259,13 @@ export class UpstreamPool {
                 },
                 onPendingTx: (hash) => this.announcePendingTx(hash),
                 onSyncing: (status) => this.updateSyncing(u.name, status),
+                onFeedIssue: (kind, status, detail) => {
+                  this.logger?.warn(
+                    status === "rejected"
+                      ? `upstream ${u.name} rejected the ${kind} subscription${detail !== undefined ? `: ${detail}` : ""}; that feed stays off until reconnect`
+                      : `upstream ${u.name} never answered the ${kind} subscription (unsupported?); that feed stays off while other feeds keep working`,
+                  );
+                },
                 onAvailability: (available, detail) => {
                   if (u.wsHealthy !== available) {
                     if (available) {
