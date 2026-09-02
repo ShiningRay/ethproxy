@@ -77,11 +77,18 @@ export class UpstreamWsConnection {
     return new Promise((resolve) => {
       const ws = new WebSocket(upstreamWsUrl(this.upstream));
       this.ws = ws;
+      /**
+       * Set when WE initiate the teardown (connect timeout, ping watchdog),
+       * so the close log can tell local teardowns apart from peer-initiated
+       * closes — both would otherwise surface as the same 1006.
+       */
+      let teardownReason: string | null = null;
       const finish = (): void => {
         clearTimeout(timer);
         resolve();
       };
       const timer = setTimeout(() => {
+        teardownReason = `connect/subscribe timeout after ${this.timeoutMs}ms`;
         ws.terminate();
       }, this.timeoutMs);
 
@@ -124,6 +131,7 @@ export class UpstreamWsConnection {
           pingTimer = setInterval(() => {
             if (Date.now() - lastPongAt > 2 * this.pingIntervalMs) {
               // Half-open or dead connection: force teardown + reconnect.
+              teardownReason = `no pong for >${2 * this.pingIntervalMs}ms (local watchdog)`;
               ws.terminate();
               return;
             }
@@ -206,12 +214,14 @@ export class UpstreamWsConnection {
           this.ws = null;
           this.ready = null;
         }
-        // Surface the peer's close code/reason: it distinguishes a policy
-        // kick (e.g. 1008), a clean close (1000) and an abnormal drop (1006).
+        // Surface WHY the socket went down: our own teardown (timeout /
+        // watchdog) or the peer's close code/reason — a policy kick
+        // (e.g. 1008), a clean close (1000) or an abnormal drop (1006).
         const detail =
-          code === undefined
+          teardownReason ??
+          (code === undefined
             ? undefined
-            : `closed with ${code}${reason && reason.length > 0 ? `: ${reason.toString()}` : ""}`;
+            : `closed with ${code}${reason && reason.length > 0 ? `: ${reason.toString()}` : ""}`);
         this.callbacks.onAvailability(false, detail);
         finish();
         this.scheduleReconnect();
