@@ -552,6 +552,55 @@ describe("server endpoints", () => {
     await app.close();
   });
 
+  it("reports per-upstream forwarded call counts on /status", async () => {
+    const node = await startMockNode(1000, { eth_getBalance: () => "0x0" });
+    const { config, pool, proxy } = await makeProxy([node]);
+    const app = await buildServer(proxy, pool, config);
+
+    const statusOf = async () => {
+      const res = await app.inject({ method: "GET", url: "/status" });
+      return res.json() as {
+        upstreams: {
+          name: string;
+          requests: { ok: number; error: number };
+        }[];
+      };
+    };
+
+    // Counters are process-wide singletons: assert on deltas.
+    const baseline = (await statusOf()).upstreams[0]!.requests;
+    const baselineOk = baseline.ok;
+    const baselineErr = baseline.error;
+
+    await proxy.handle({
+      jsonrpc: "2.0" as const,
+      id: 1,
+      method: "eth_getBalance",
+      params: ["0x" + "11".repeat(20), "latest"],
+    });
+    await proxy.handle({
+      jsonrpc: "2.0" as const,
+      id: 2,
+      method: "eth_getBalance",
+      params: ["0x" + "22".repeat(20), "latest"],
+    });
+    let body = await statusOf();
+    expect(body.upstreams[0]!.name).toBe("node-0");
+    expect(body.upstreams[0]!.requests.ok - baselineOk).toBe(2);
+
+    node.setFail(true);
+    await proxy.handle({
+      jsonrpc: "2.0" as const,
+      id: 3,
+      method: "eth_getBalance",
+      params: ["0x" + "33".repeat(20), "latest"],
+    });
+    body = await statusOf();
+    expect(body.upstreams[0]!.requests.error - baselineErr).toBe(1);
+
+    await app.close();
+  });
+
   it("exposes Prometheus metrics on /metrics", async () => {
     const node = await startMockNode(1000, { eth_gasPrice: () => "0x1" });
     const { config, pool, proxy } = await makeProxy([node]);

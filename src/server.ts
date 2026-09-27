@@ -3,7 +3,7 @@ import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Config } from "./config.js";
 import { renderIndexPage } from "./index-page.js";
-import { bindMetrics, metricsContentType, renderMetrics } from "./metrics.js";
+import { bindMetrics, metricsContentType, renderMetrics, upstreamRequestCounts } from "./metrics.js";
 import type { UpstreamPool } from "./pool.js";
 import type { ProxyHandler } from "./proxy.js";
 import { RateLimiter } from "./ratelimit.js";
@@ -106,11 +106,19 @@ export async function buildServer(
     return reply.code(503).send({ status: "no healthy upstream" });
   });
 
-  app.get("/status", async () => ({
-    ...pool.status(),
-    cache: proxy.cacheStats(),
-    local: proxy.localStats(),
-  }));
+  app.get("/status", async () => {
+    const status = pool.status();
+    const counts = await upstreamRequestCounts();
+    return {
+      ...status,
+      upstreams: status.upstreams.map((u) => ({
+        ...u,
+        requests: counts.get(u.name) ?? { ok: 0, error: 0 },
+      })),
+      cache: proxy.cacheStats(),
+      local: proxy.localStats(),
+    };
+  });
 
   bindMetrics(pool, proxy);
   app.get("/metrics", async (_request, reply) => {

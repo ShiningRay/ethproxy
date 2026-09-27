@@ -66,9 +66,9 @@ export function renderIndexPage(meta: IndexPageMeta): string {
   </div>
   <table>
     <thead><tr>
-      <th>Upstream</th><th>Status</th><th>Block</th><th>Chain ID</th><th>Syncing</th><th>WS</th><th>Latency</th><th>Failures</th>
+      <th>Upstream</th><th>Status</th><th>Block</th><th>Chain ID</th><th>Syncing</th><th>WS</th><th>Latency</th><th>Calls</th><th>Failures</th>
     </tr></thead>
-    <tbody id="upstreams"><tr><td colspan="8" class="muted">loading…</td></tr></tbody>
+    <tbody id="upstreams"><tr><td colspan="9" class="muted">loading…</td></tr></tbody>
   </table>
   <div id="error"></div>
   <footer>
@@ -118,6 +118,9 @@ async function refresh() {
         "<td>" + (u.syncing ? "yes" : "no") + "</td>" +
         ws +
         "<td>" + (u.latencyMs === null || u.latencyMs === undefined ? "–" : u.latencyMs + " ms") + "</td>" +
+        "<td>" + (u.requests
+          ? u.requests.ok.toLocaleString() + (u.requests.error ? ' <span class="bad">(' + u.requests.error + ' err)</span>' : "")
+          : "–") + "</td>" +
         "<td>" + u.consecutiveFailures + "</td></tr>";
     }).join("");
   } catch (err) {

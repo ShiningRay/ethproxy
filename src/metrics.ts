@@ -32,6 +32,31 @@ export const upstreamRequests = new Counter({
   registers: [registry],
 });
 
+export interface UpstreamRequestCount {
+  ok: number;
+  error: number;
+}
+
+/**
+ * Aggregate ethproxy_upstream_requests_total by upstream. Single source of
+ * truth for both /metrics and the per-upstream counts on /status.
+ */
+export async function upstreamRequestCounts(): Promise<
+  Map<string, UpstreamRequestCount>
+> {
+  const { values } = await upstreamRequests.get();
+  const counts = new Map<string, UpstreamRequestCount>();
+  for (const v of values) {
+    const name = v.labels.upstream;
+    if (typeof name !== "string") continue;
+    const entry = counts.get(name) ?? { ok: 0, error: 0 };
+    if (v.labels.result === "error") entry.error += v.value;
+    else entry.ok += v.value;
+    counts.set(name, entry);
+  }
+  return counts;
+}
+
 const upstreamHealthy = new Gauge({
   name: "ethproxy_upstream_healthy",
   help: "1 when the upstream is healthy and eligible, 0 otherwise",
