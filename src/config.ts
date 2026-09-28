@@ -38,7 +38,7 @@ const healthSchema = z.object({
 const cacheSchema = z.object({
   /** Master switch: when false, requests bypass the cache entirely. */
   enabled: z.boolean().default(true),
-  backend: z.enum(["memory", "redis"]).default("memory"),
+  backend: z.enum(["memory", "redis", "filesystem"]).default("memory"),
   shortTtlMs: z.number().int().positive().default(2000),
   pendingTtlMs: z.number().int().positive().default(1000),
   /**
@@ -66,6 +66,20 @@ const cacheSchema = z.object({
     .object({
       url: z.string().default("redis://127.0.0.1:6379"),
       keyPrefix: z.string().default("ethproxy:"),
+    })
+    .optional(),
+  filesystem: z
+    .object({
+      /** Directory for cache files; created on demand. */
+      dir: z.string().default("./cache"),
+      /**
+       * Background sweep period: removes expired/corrupt files and enforces
+       * maxBytes. 0 disables the sweep (expired entries are still dropped
+       * lazily on read, but disk usage is then never reclaimed proactively).
+       */
+      sweepIntervalMs: z.number().int().nonnegative().default(60000),
+      /** Soft disk budget; oldest-written files are evicted first. */
+      maxBytes: z.number().int().positive().default(1073741824),
     })
     .optional(),
 });

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CacheConfig } from "../config.js";
 import { stableStringify } from "../rpc.js";
+import { FilesystemCacheBackend } from "./filesystem.js";
 import { MemoryCacheBackend } from "./memory.js";
 import { RedisCacheBackend } from "./redis.js";
 import type { CacheBackend } from "./types.js";
@@ -93,6 +94,11 @@ export function createCacheBackend(config: CacheConfig): CacheBackend {
         config.redis?.url ?? "redis://127.0.0.1:6379",
         config.redis?.keyPrefix ?? "ethproxy:",
       );
+    case "filesystem":
+      return new FilesystemCacheBackend(config.filesystem?.dir ?? "./cache", {
+        sweepIntervalMs: config.filesystem?.sweepIntervalMs ?? 60000,
+        maxBytes: config.filesystem?.maxBytes ?? 1073741824,
+      });
   }
 }
 

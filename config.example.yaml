@@ -75,7 +75,7 @@ cors:
 
 cache:
   enabled: true             # 总开关：false 时所有请求绕过缓存（也不会连接 Redis）
-  backend: memory           # memory | redis（可扩展其他后端）
+  backend: memory           # memory | filesystem | redis
   shortTtlMs: 2000          # 链头相关数据的短 TTL（dynamicTtl 开启时作为上限与初始回退值）
   pendingTtlMs: 1000        # 未打包交易收据等的极短 TTL
   unfinalizedTtlMs: 900000  # 7 个重组校验方法（按块高取块/数量/叔块 + 按哈希取交易/收据）未定型条目的兜底 TTL；
@@ -91,3 +91,10 @@ cache:
   # redis:
   #   url: redis://127.0.0.1:6379
   #   keyPrefix: "ethproxy:"
+
+  # backend: filesystem 时启用：条目以 JSON 文件落盘（键 sha256 散列为文件名，
+  # 散列到 256 个子目录），进程内存占用与缓存条目数无关。
+  # filesystem:
+  #   dir: ./cache              # 缓存目录，按需创建；Docker 部署建议挂卷
+  #   sweepIntervalMs: 60000    # 后台清扫周期（删过期/损坏文件、执行 maxBytes）；0 关闭
+  #   maxBytes: 1073741824      # 磁盘软上限（默认 1GiB），超限从最旧文件开始驱逐

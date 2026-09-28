@@ -17,7 +17,7 @@ A reverse proxy for Ethereum JSON-RPC: multi-upstream weighted load balancing wi
   - Short TTL (default 2s): head-dependent data such as `eth_gasPrice`
   - Never cached: write methods like `eth_sendRawTransaction`, `pending` tags, future blocks, admin namespaces (`admin_*`/`debug_*`/…), unrecognized methods (fail-safe)
 - **`latest` consistency**: `latest` tags — including the implicit latest when the block param is omitted — are translated to the locally observed pool head H before caching/forwarding. All clients read the same height within a poll window and cache keys stay stable as `(method, H)`. Translated requests route only to nodes with `blockNumber >= H`; if none qualify, the original `latest` request is forwarded without caching its response. `eth_blockNumber` is answered directly from the local head with zero upstream calls
-- **Pluggable cache backends**: in-memory LRU (default) or Redis; implement the `CacheBackend` interface to add your own
+- **Pluggable cache backends**: in-memory LRU (default), on-disk (`filesystem`) or Redis; implement the `CacheBackend` interface to add your own
 - **Batch requests**: each element goes through the cache pipeline individually; misses are split by cacheability (cacheable items via single-flight, the rest merged into one upstream batch)
 - **Sticky filter routing**: `eth_newFilter`/`eth_newPendingTransactionFilter` responses get a proxy-issued globally unique id (node-local ids collide across nodes); `eth_getFilterChanges`/`eth_getFilterLogs`/`eth_uninstallFilter` are rewritten back and pinned to the owning upstream. Mappings expire after `filters.stickyTtlMs` idle (default 5 min, matching geth's filter timeout) and refresh on every poll. When head tracking is active (`health.wsHeads`), `eth_newBlockFilter` is answered entirely locally — the proxy issues the id and serves changes from its observed-head buffer with zero upstream calls
 - **Single-flight**: concurrent misses for the same cache key share one upstream request, preventing the thundering herd when short-TTL entries expire
@@ -66,13 +66,16 @@ See [config.example.yaml](config.example.yaml). Key options:
 | `filters.stickyTtlMs` | Idle TTL for sticky filter-id mappings; refreshed on every poll | 300000 |
 | `txpool.mirror` | Mirror pending transactions: the pool keeps an `eth_subscribe("newPendingTransactions")` feed per WS-capable upstream and serves client subscriptions locally (deduped hashes); `false` = pass through | false |
 | `syncing.mirror` | Mirror sync status: serve client `eth_subscribe("syncing")` locally from the aggregated pool view — syncing (progress object) while ANY upstream is syncing, false once none are (immediate answer on subscribe, then changes only); `false` = pass through | false |
-| `cache.backend` | `memory` or `redis` | `memory` |
+| `cache.backend` | `memory`, `filesystem` or `redis` | `memory` |
 | `cache.enabled` | Master switch; when `false` every request bypasses the cache (and Redis is never connected) | true |
 | `cache.shortTtlMs` | TTL for head-dependent data (ceiling/fallback when dynamicTtl is on) | 2000 |
 | `cache.unfinalizedTtlMs` | Fallback TTL for the seven reorg-validated methods' entries below finalityDepth (correctness comes from read-time reorg validation) | 900000 |
 | `cache.dynamicTtl` | Derive short TTL from the observed block interval (interval/4, clamped to `[minTtlMs, shortTtlMs]`) | true |
 | `cache.finalityDepth` | Depth below which blocks are treated as immutable | 64 |
 | `cache.redis.url` / `keyPrefix` | Redis connection and key prefix | — |
+| `cache.filesystem.dir` | Directory for cache files (`backend: filesystem`); created on demand, contents are plain files (one JSON envelope per entry, sharded into 256 subdirectories) | `./cache` |
+| `cache.filesystem.sweepIntervalMs` | Background sweep period: removes expired/corrupt files and enforces `maxBytes`; `0` disables (expired entries still drop lazily on read) | 60000 |
+| `cache.filesystem.maxBytes` | Soft disk budget; when a sweep finds the total above it, oldest-written files are evicted first | 1073741824 |
 | `security.blockedNamespaces` | RPC namespaces rejected outright | admin, personal, debug, trace, miner, txpool |
 | `security.maxBatchSize` / `maxBodyBytes` / `maxLogsRange` | Batch element limit, body size limit, `eth_getLogs` span limit | 100 / 1MB / 10000 |
 | `rateLimit.enabled` | Per-client-IP rate limiting (HTTP 429 / WS error -32005) | true |

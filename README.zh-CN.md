@@ -17,7 +17,7 @@ Ethereum JSON-RPC 反向代理：多上游负载均衡与故障转移、同步�
   - 短 TTL（默认 2s）：`eth_gasPrice` 等链头相关数据
   - 不缓存：`eth_sendRawTransaction` 等写方法、`pending` 标签、未来区块、`admin_*`/`debug_*` 等管理命名空间、未识别方法（fail-safe）
 - **latest 一致性**：`latest` 标签（含参数缺省的隐含 latest）在进入缓存/转发前翻译为本地观测的池链高 H——同一轮询窗口内所有客户端读到一致的数据，缓存键稳定为 `(method, H)`；翻译后的请求只路由到 `blockNumber >= H` 的节点，无节点满足时回退为原始 `latest` 请求且结果不缓存；`eth_blockNumber` 直接由本地链高应答，不打上游
-- **可插拔缓存后端**：内存 LRU（默认）或 Redis；实现 `CacheBackend` 接口即可扩展
+- **可插拔缓存后端**：内存 LRU（默认）、磁盘（`filesystem`）或 Redis；实现 `CacheBackend` 接口即可扩展
 - **批量请求**：数组请求逐项走缓存管线，未命中项按缓存性分流（可缓存项走 single-flight，其余合并为单次批量转发）
 - **Filter 粘滞路由**：`eth_newFilter`/`eth_newPendingTransactionFilter` 的响应会被改写为代理生成的全局唯一 ID（节点本地 ID 跨节点会冲突）；`eth_getFilterChanges`/`eth_getFilterLogs`/`eth_uninstallFilter` 换回节点本地 ID 并固定路由到创建它的上游。映射空闲超过 `filters.stickyTtlMs`（默认 5 分钟，对齐 geth 的 filter 过期）即失效，每次轮询会刷新。链高跟踪开启时（`health.wsHeads`），`eth_newBlockFilter` 完全由代理本地应答——ID 由代理签发，轮询结果来自本地观测到的新头缓冲，零上游调用
 - **Single-flight 防拥堵**：同一缓存键的并发未命中只发一次上游请求，其余请求共享该结果，避免短 TTL 过期瞬间的惊群效应
@@ -66,13 +66,16 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `filters.stickyTtlMs` | filter 粘滞路由映射的空闲 TTL，每次轮询刷新 | 300000 |
 | `txpool.mirror` | 本地 pending 交易镜像：池为每个 WS 可用的上游维持 `eth_subscribe("newPendingTransactions")` 订阅，客户端订阅改由代理本地应答（哈希去重后扇出）；`false` = 透传上游 | false |
 | `syncing.mirror` | 本地应答 `eth_subscribe("syncing")`，按池聚合视图：任一上游同步中即返回 syncing（带进度对象），全部同步完回 false（订阅后立即回当前状态，之后只在变化时推送）；`false` = 透传上游 | false |
-| `cache.backend` | `memory` 或 `redis` | `memory` |
+| `cache.backend` | `memory`、`filesystem` 或 `redis` | `memory` |
 | `cache.enabled` | 缓存总开关，`false` 时所有请求绕过缓存（也不再连接 Redis） | true |
 | `cache.shortTtlMs` | 链头相关数据 TTL（dynamicTtl 开启时为上限/回退值） | 2000 |
 | `cache.unfinalizedTtlMs` | 7 个重组校验方法未定型条目的兜底 TTL（正确性由读时重组校验保证） | 900000 |
 | `cache.dynamicTtl` | 按观测出块间隔动态调整短 TTL（间隔/4，钳制在 `[minTtlMs, shortTtlMs]`） | true |
 | `cache.finalityDepth` | 多少块深度视为不可变 | 64 |
 | `cache.redis.url` / `keyPrefix` | Redis 连接与键前缀 | — |
+| `cache.filesystem.dir` | 缓存文件目录（`backend: filesystem` 时生效）；按需创建，每条目一个 JSON 文件，散列到 256 个子目录 | `./cache` |
+| `cache.filesystem.sweepIntervalMs` | 后台清扫周期：删除过期/损坏文件并执行 `maxBytes` 预算；`0` 关闭清扫（过期条目仍在读取时惰性删除） | 60000 |
+| `cache.filesystem.maxBytes` | 磁盘占用软上限；清扫发现超限时从最旧文件开始驱逐 | 1073741824 |
 | `security.blockedNamespaces` | 直接拒绝的 RPC 命名空间 | admin, personal, debug, trace, miner, txpool |
 | `security.maxBatchSize` / `maxBodyBytes` / `maxLogsRange` | 批量大小、请求体、`eth_getLogs` 跨度上限 | 100 / 1MB / 10000 |
 | `rateLimit.enabled` | 按客户端 IP 限速总开关（HTTP 429 / WS 返回 -32005） | true |
