@@ -3,4 +3,4 @@ dist/
 *.log
 .DS_Store
 config.local.yaml
-cache/
+/cache/
