@@ -9,6 +9,12 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # ioredis 6 is blocked until ioredis-mock (and its @types) support it;
+      # their peerDependencies still pin ioredis ^5, so npm ci ERESOLVEs.
+      - dependency-name: ioredis
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
