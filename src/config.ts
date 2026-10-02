@@ -186,15 +186,17 @@ const configSchema = z.object({
    * majority chain id among responsive upstreams.
    */
   chainId: z.number().int().positive().optional(),
-  health: healthSchema.default({}),
-  cache: cacheSchema.default({}),
-  security: securitySchema.default({}),
-  rateLimit: rateLimitSchema.default({}),
-  filters: filtersSchema.default({}),
-  txpool: txpoolSchema.default({}),
-  syncing: syncingSchema.default({}),
-  reorg: reorgSchema.default({}),
-  cors: corsSchema.default({}),
+  // zod 4: .default() demands the full output type; .prefault({}) feeds an
+  // empty input through the schema so the per-field defaults apply.
+  health: healthSchema.prefault({}),
+  cache: cacheSchema.prefault({}),
+  security: securitySchema.prefault({}),
+  rateLimit: rateLimitSchema.prefault({}),
+  filters: filtersSchema.prefault({}),
+  txpool: txpoolSchema.prefault({}),
+  syncing: syncingSchema.prefault({}),
+  reorg: reorgSchema.prefault({}),
+  cors: corsSchema.prefault({}),
 }).superRefine((cfg, ctx) => {
   // Read-time reorg validation is only sound when every unfinalized cached
   // height is covered by the detector's header window.
