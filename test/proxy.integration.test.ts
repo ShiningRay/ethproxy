@@ -140,6 +140,7 @@ async function makeProxy(
       enabled: false,
       requestsPerSecond: 50,
       burst: 100,
+      batchCost: "items",
       wsMessagesPerSecond: 20,
       wsBurst: 40,
       maxSubscriptionsPerIp: 20,
@@ -567,6 +568,81 @@ describe("server endpoints", () => {
     await app.close();
   });
 
+  it("charges a batch per item by default and rejects the whole batch with Retry-After", async () => {
+    const node = await startMockNode(1000);
+    const { config, pool, proxy } = await makeProxy([node]);
+    config.rateLimit = {
+      enabled: true,
+      requestsPerSecond: 100,
+      burst: 120,
+      batchCost: "items",
+      wsMessagesPerSecond: 20,
+      wsBurst: 40,
+      maxSubscriptionsPerIp: 20,
+    };
+    const web = await buildServer(proxy, pool, config);
+
+    const batch = (n: number) =>
+      web.inject({
+        method: "POST",
+        url: "/",
+        payload: Array.from({ length: n }, (_, i) => ({
+          jsonrpc: "2.0",
+          id: i,
+          method: "eth_chainId",
+          params: [],
+        })),
+      });
+
+    // First batch drains most of the 120-token burst; the second cannot
+    // afford 100 and is rejected whole, with a Retry-After hint.
+    const first = await batch(100);
+    expect(first.statusCode).toBe(200);
+    const second = await batch(100);
+    expect(second.statusCode).toBe(429);
+    expect(second.json()).toMatchObject({ error: { code: -32005 } });
+    expect(second.headers["retry-after"]).toBeDefined();
+    expect(Number(second.headers["retry-after"])).toBeGreaterThan(0);
+
+    await web.close();
+  });
+
+  it("charges a batch once per request in request mode", async () => {
+    const node = await startMockNode(1000);
+    const { config, pool, proxy } = await makeProxy([node]);
+    config.rateLimit = {
+      enabled: true,
+      requestsPerSecond: 100,
+      burst: 120,
+      batchCost: "request",
+      wsMessagesPerSecond: 20,
+      wsBurst: 40,
+      maxSubscriptionsPerIp: 20,
+    };
+    const web = await buildServer(proxy, pool, config);
+
+    const batch = (n: number) =>
+      web.inject({
+        method: "POST",
+        url: "/",
+        payload: Array.from({ length: n }, (_, i) => ({
+          jsonrpc: "2.0",
+          id: i,
+          method: "eth_chainId",
+          params: [],
+        })),
+      });
+
+    // 100 calls packed into one request cost a single token, so a burst of
+    // full batches no longer trips the limiter on size alone.
+    for (let i = 0; i < 100; i++) {
+      const res = await batch(100);
+      expect(res.statusCode).toBe(200);
+    }
+
+    await web.close();
+  });
+
   it("serves the status page on a custom path and 404s the root", async () => {
     const node = await startMockNode(1000);
     const { config, pool, proxy } = await makeProxy([node]);
@@ -696,6 +772,7 @@ describe("server endpoints", () => {
       enabled: true,
       requestsPerSecond: 1,
       burst: 2,
+      batchCost: "items",
       wsMessagesPerSecond: 20,
       wsBurst: 40,
       maxSubscriptionsPerIp: 20,

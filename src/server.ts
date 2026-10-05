@@ -6,7 +6,7 @@ import { renderIndexPage } from "./index-page.js";
 import { bindMetrics, metricsContentType, renderMetrics, upstreamRequestCounts } from "./metrics.js";
 import type { UpstreamPool } from "./pool.js";
 import type { ProxyHandler } from "./proxy.js";
-import { RateLimiter } from "./ratelimit.js";
+import { RateLimiter, payloadCost, type BatchCostMode } from "./ratelimit.js";
 import { errorResponse } from "./rpc.js";
 import { handleWsConnection, SubscriptionRegistry } from "./ws-proxy.js";
 
@@ -35,6 +35,7 @@ export async function buildServer(
     config.rateLimit.wsMessagesPerSecond,
     config.rateLimit.wsBurst,
   );
+  const batchCostMode = config.rateLimit.batchCost;
   const subscriptions = new SubscriptionRegistry();
   app.addHook("onClose", async () => {
     httpLimiter.close();
@@ -54,10 +55,15 @@ export async function buildServer(
 
   app.post("/", async (request, reply) => {
     if (config.rateLimit.enabled) {
-      const cost = Array.isArray(request.body) ? request.body.length : 1;
+      const cost = payloadCost(request.body, batchCostMode);
       if (!httpLimiter.take(request.ip, cost)) {
+        const retryAfterMs = httpLimiter.msUntilAvailable(request.ip, cost);
         return reply
           .code(429)
+          // RFC 9110 Retry-After: delta-seconds. Lets a throttled client back
+          // off deliberately instead of retrying blindly (which drains the
+          // bucket further and keeps it throttled).
+          .header("retry-after", Math.ceil(retryAfterMs / 1000))
           .header("content-type", "application/json")
           .send(errorResponse(null, -32005, "rate limit exceeded"));
       }
@@ -82,6 +88,7 @@ export async function buildServer(
       handleWsConnection(socket, pool, proxy, app.log, {
         limiter: config.rateLimit.enabled ? wsLimiter : undefined,
         clientIp: request.ip,
+        batchCost: batchCostMode,
       }, subscriptions, config.rateLimit.maxSubscriptionsPerIp);
     },
     handler: async (_request, reply) => {

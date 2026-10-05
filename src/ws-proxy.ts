@@ -2,7 +2,8 @@ import { randomBytes } from "node:crypto";
 import WebSocket from "ws";
 import type { UpstreamPool } from "./pool.js";
 import type { ProxyHandler } from "./proxy.js";
-import type { RateLimiter } from "./ratelimit.js";
+import type { RateLimiter, BatchCostMode } from "./ratelimit.js";
+import { payloadCost } from "./ratelimit.js";
 import {
   errorResponse,
   formatRequestForLog,
@@ -20,6 +21,8 @@ export interface WsLogger {
 export interface WsRateLimit {
   limiter: RateLimiter | undefined;
   clientIp: string;
+  /** How a batch message is charged: per element, or per request. */
+  batchCost?: BatchCostMode;
 }
 
 /** Tracks live subscription ids per client IP across all connections. */
@@ -118,8 +121,9 @@ class WsClientSession {
       return;
     }
 
-    // Rate limit per client IP; each JSON-RPC call in the message costs 1.
-    const cost = Array.isArray(parsed) ? parsed.length : 1;
+    // Rate limit per client IP; how a batch is charged depends on the
+    // configured batchCost mode (per item by default, or per request).
+    const cost = payloadCost(parsed, this.rateLimit?.batchCost ?? "items");
     if (this.rateLimit?.limiter !== undefined) {
       if (!this.rateLimit.limiter.take(this.rateLimit.clientIp, cost)) {
         const id = !Array.isArray(parsed) && isJsonRpcRequest(parsed) ? parsed.id : null;

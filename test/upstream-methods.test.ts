@@ -143,6 +143,7 @@ function makeConfig(upstreams: UpstreamConfig[]): Config {
       enabled: false,
       requestsPerSecond: 50,
       burst: 100,
+      batchCost: "items",
       wsMessagesPerSecond: 20,
       wsBurst: 40,
       maxSubscriptionsPerIp: 20,

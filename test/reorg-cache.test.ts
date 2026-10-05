@@ -176,6 +176,7 @@ function makeConfig(upstream: { name: string; url: string; wsUrl?: string }): Co
       enabled: false,
       requestsPerSecond: 50,
       burst: 100,
+      batchCost: "items",
       wsMessagesPerSecond: 20,
       wsBurst: 40,
       maxSubscriptionsPerIp: 20,

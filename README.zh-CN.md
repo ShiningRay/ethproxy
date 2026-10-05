@@ -8,6 +8,7 @@ Ethereum JSON-RPC 反向代理：多上游负载均衡与故障转移、同步�
 
 - **多上游**：加权 round-robin；传输层失败自动切换到下一个健康节点（`eth_sendRawTransaction` 等有副作用的方法不重试）
 - **健康与同步检查**：后台主动轮询 `eth_syncing` + `eth_blockNumber` + `eth_chainId`；同步中、连续失败超过阈值、或落后池内最大高度超过 `maxBlockLag` 的节点会被摘除，恢复后自动重新入池
+- **客户端限速**：按客户端 IP 的令牌桶（`rateLimit`），HTTP 超限返回 429 + `-32005` 并附 `Retry-After`（秒），WS 超限回 `-32005`。批量请求的计费可选：`batchCost: items`（缺省，按元素逐个扣令牌——100 项批量需 100 个令牌，额度不足时整批被拒）或 `request`（每请求只扣 1 个令牌，便于客户端自由批量打包）
 - **上游方法黑白名单**：每个上游可声明自己能承载哪些 RPC 方法（`upstreams[].methods`）。请求的方法若该上游不承载则直接跳过、改由能承载的节点应答——服务商特有的方法限制（如 publicnode 免费档拒绝 `eth_getTransactionReceipt`）不再以 403 形式暴露，而是被选路绕开
 - **上游限速与限流退避**：可为每个上游配置令牌桶（`upstreams[].rateLimit`）限制代理发往该上游的请求速率——优先选择桶内有令牌的上游，全都没有才等待（健康轮询则跳过本轮）。上游仍返回限流信号时（HTTP 429——按 `Retry-After` 头——或限流类 JSON-RPC error），代理将其停用冷却（`upstreamCooldown.defaultMs`，上限 `maxMs`；可按上游覆盖 `cooldownMs`）：冷却期内选路跳过、健康轮询暂停，到期自动恢复；可重试请求遇 429 会故障转移到下一个上游
 - **newHeads 链高跟踪**：上游 WS 可用时，池为其维持一条持久的 `eth_subscribe("newHeads")` 连接，每收到通知即更新本地观测链高（断线指数退避重连）；WS 不可用或断开时自动回退为 HTTP 健康轮询获取块高。可用 `health.wsHeads: false` 关闭（块高仅来自 HTTP 轮询，WS 可用性改为每轮探测）
@@ -89,7 +90,8 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `security.blockedNamespaces` | 直接拒绝的 RPC 命名空间 | admin, personal, debug, trace, miner, txpool |
 | `security.maxBatchSize` / `maxBodyBytes` / `maxLogsRange` | 批量大小、请求体、`eth_getLogs` 跨度上限 | 100 / 1MB / 10000 |
 | `rateLimit.enabled` | 按客户端 IP 限速总开关（HTTP 429 / WS 返回 -32005） | true |
-| `rateLimit.requestsPerSecond` / `burst` | HTTP 限速速率与突发容量（批量按元素计费） | 50 / 100 |
+| `rateLimit.requestsPerSecond` / `burst` | HTTP 限速速率与突发容量 | 50 / 100 |
+| `rateLimit.batchCost` | 批量请求的计费方式：`items`（按元素逐个扣令牌——100 项批量需 100 个令牌，故与单条请求竞争额度、额度不足时整批被拒）或 `request`（每个 HTTP 请求只扣 1 个令牌，批量再大也不因体积被拒） | items |
 | `rateLimit.wsMessagesPerSecond` / `wsBurst` | WS 消息限速速率与突发容量 | 20 / 40 |
 | `rateLimit.maxSubscriptionsPerIp` | 同一 IP 并发订阅数上限（跨连接合计，退订/断连释放） | 20 |
 | `cors.enabled` / `cors.origin` | 跨域配置；`*` 允许任意域，多个域逗号分隔 | true / `*` |

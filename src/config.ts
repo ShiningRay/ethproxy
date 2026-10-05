@@ -172,6 +172,17 @@ const rateLimitSchema = z.object({
   enabled: z.boolean().default(true),
   requestsPerSecond: z.number().positive().default(50),
   burst: z.number().int().positive().default(100),
+  /**
+   * How a JSON-RPC batch is charged against the bucket:
+   * - "items"   — one token per element. A 100-item batch needs 100 tokens,
+   *               so it is rejected whole unless the burst capacity is
+   *               large enough; batches then compete with single requests.
+   * - "request" — one token per HTTP request (or WS message) regardless of
+   *               how many calls it carries, so batching never fails on
+   *               size and a client can pack many calls into each token.
+   * Defaults to "items" (the historical behaviour).
+   */
+  batchCost: z.enum(["items", "request"]).default("items"),
   /** WS messages per second per client IP (each JSON-RPC call costs 1). */
   wsMessagesPerSecond: z.number().positive().default(20),
   wsBurst: z.number().int().positive().default(40),

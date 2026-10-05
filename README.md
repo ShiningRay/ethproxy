@@ -88,8 +88,9 @@ See [config.example.yaml](config.example.yaml). Key options:
 | `cache.filesystem.bucketMs` | Time-bucket width for on-disk expiring entries; the sweep removes whole expired buckets without stat-ing or reading individual files | 3600000 |
 | `security.blockedNamespaces` | RPC namespaces rejected outright | admin, personal, debug, trace, miner, txpool |
 | `security.maxBatchSize` / `maxBodyBytes` / `maxLogsRange` | Batch element limit, body size limit, `eth_getLogs` span limit | 100 / 1MB / 10000 |
-| `rateLimit.enabled` | Per-client-IP rate limiting (HTTP 429 / WS error -32005) | true |
-| `rateLimit.requestsPerSecond` / `burst` | HTTP rate and burst (batches cost their element count) | 50 / 100 |
+| `rateLimit.enabled` | Per-client-IP rate limiting (HTTP 429 with `Retry-After` / WS error -32005) | true |
+| `rateLimit.requestsPerSecond` / `burst` | HTTP rate and burst | 50 / 100 |
+| `rateLimit.batchCost` | How a batch is charged: `items` (one token per element — a 100-call batch needs 100 tokens, so it competes with single requests and can be rejected whole) or `request` (one token per HTTP request regardless of size, so batching never fails on size) | items |
 | `rateLimit.wsMessagesPerSecond` / `wsBurst` | WS message rate and burst | 20 / 40 |
 | `rateLimit.maxSubscriptionsPerIp` | Max concurrent subscriptions per IP (across connections; freed on unsubscribe/disconnect) | 20 |
 | `cors.enabled` / `cors.origin` | CORS settings; `*` allows any origin, comma-separate multiple origins | true / `*` |
