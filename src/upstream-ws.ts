@@ -1,5 +1,9 @@
 import WebSocket from "ws";
-import { upstreamWsUrl, type Upstream } from "./upstream.js";
+import {
+  DEFAULT_USER_AGENT,
+  upstreamWsUrl,
+  type Upstream,
+} from "./upstream.js";
 
 export interface UpstreamWsCallbacks {
   /** newHeads notification payload (head object). */
@@ -88,7 +92,10 @@ export class UpstreamWsConnection {
   private connect(): Promise<void> {
     return new Promise((resolve) => {
       const ws = new WebSocket(upstreamWsUrl(this.upstream), {
-        headers: this.upstream.config.headers,
+        headers: {
+          "user-agent": DEFAULT_USER_AGENT,
+          ...this.upstream.config.headers,
+        },
       });
       this.ws = ws;
       /**

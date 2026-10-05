@@ -1,6 +1,19 @@
+import { createRequire } from "node:module";
 import { request } from "undici";
 import type { UpstreamConfig, UpstreamCooldownConfig } from "./config.js";
 import type { JsonRpcResponse } from "./rpc.js";
+
+const { version } = createRequire(import.meta.url)("../package.json") as {
+  version: string;
+};
+
+/**
+ * Default User-Agent for every request we open to an upstream (HTTP JSON-RPC
+ * and WebSocket handshakes). undici sends none, and some public providers
+ * reject anonymous clients outright — 0xrpc answers 404 and fullsend's
+ * Cloudflare front answers a 403 challenge when no UA is present.
+ */
+export const DEFAULT_USER_AGENT = `ethproxy/${version}`;
 
 export interface UpstreamStatus {
   name: string;
@@ -335,8 +348,12 @@ export class Upstream {
     try {
       res = await request(this.config.url, {
         method: "POST",
-        // Upstream-configured headers may override the default content type.
-        headers: { "content-type": "application/json", ...this.config.headers },
+        // Upstream-configured headers may override the defaults.
+        headers: {
+          "content-type": "application/json",
+          "user-agent": DEFAULT_USER_AGENT,
+          ...this.config.headers,
+        },
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(timeoutMs),
       });

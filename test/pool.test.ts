@@ -44,8 +44,17 @@ async function startMockNode(initial: {
   block?: number;
   fail?: boolean;
   chainId?: number;
+  /** Simulate a provider that does not serve eth_syncing (e.g. fullsend). */
+  noSyncing?: boolean;
 }): Promise<MockNode> {
-  let state = { syncing: false, block: 100, fail: false, chainId: 1, ...initial };
+  let state = {
+    syncing: false,
+    block: 100,
+    fail: false,
+    chainId: 1,
+    noSyncing: false,
+    ...initial,
+  };
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -66,6 +75,9 @@ async function startMockNode(initial: {
       const list = Array.isArray(calls) ? calls : [calls];
       const replies = list.map((c) => {
         if (c.method === "eth_syncing") {
+          if (state.noSyncing) {
+            return { jsonrpc: "2.0", id: null, error: { code: -32601, message: "method not supported: eth_syncing" } };
+          }
           return { jsonrpc: "2.0", id: c.id, result: state.syncing ? { startingBlock: "0x0" } : false };
         }
         if (c.method === "eth_blockNumber") {
@@ -296,6 +308,18 @@ describe("UpstreamPool", () => {
     await waitFor(() => withWs.status().upstreams[0]?.wsHealthy === false);
     await withWs.pollAll();
     expect(withWs.status().upstreams[0]?.wsHealthy).toBe(false);
+  });
+
+  it("keeps an upstream healthy when it does not support eth_syncing", async () => {
+    const node = await startMockNode({ noSyncing: true, block: 100 });
+    const pool = new UpstreamPool([{ name: "a", url: node.url, weight: 1 }], health);
+    await pool.pollAll();
+    // The poll batch answers eth_blockNumber but rejects eth_syncing; the
+    // node is still usable and must not be counted as failed.
+    expect(pool.status().upstreams[0]?.consecutiveFailures).toBe(0);
+    expect(pool.status().upstreams[0]?.healthy).toBe(true);
+    expect(pool.status().upstreams[0]?.blockNumber).toBe(100);
+    expect(pool.select(1)[0]?.name).toBe("a");
   });
 
   it("aggregates syncing status: any syncing upstream makes the pool report syncing", async () => {

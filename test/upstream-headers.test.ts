@@ -142,9 +142,50 @@ describe("upstream headers: JSON-RPC calls", () => {
       "application/json; charset=utf-8",
     );
   });
+
+  it("sends a default user agent so providers that reject anonymous clients accept us", async () => {
+    const mock = await startHttpMock();
+    const u = new Upstream(
+      { name: "a", url: mock.url, weight: 1 },
+      2000,
+    );
+    await u.call({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] });
+    // undici sends no User-Agent by default; 0xrpc answers 404 and fullsend
+    // 403 in that case, so a proxy identity must always be present.
+    expect(mock.seen[0]?.["user-agent"]).toMatch(/^ethproxy\//);
+  });
+
+  it("lets a configured user agent override the default", async () => {
+    const mock = await startHttpMock();
+    const u = new Upstream(
+      {
+        name: "a",
+        url: mock.url,
+        weight: 1,
+        headers: { "user-agent": "custom-agent/9" },
+      },
+      2000,
+    );
+    await u.call({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] });
+    expect(mock.seen[0]?.["user-agent"]).toBe("custom-agent/9");
+  });
 });
 
 describe("upstream headers: WebSocket handshakes", () => {
+  it("sends a default user agent on the persistent newHeads connection", async () => {
+    const http = await startHttpMock();
+    const wss = await startWsMock();
+    const pool = new UpstreamPool(
+      [{ name: "b", url: http.url, wsUrl: wss.wsUrl, weight: 1 }],
+      health,
+    );
+    pools.push(pool);
+    await pool.pollAll();
+    await waitFor(() => pool.status().upstreams[0]?.wsHealthy === true);
+    expect(wss.upgradeHeaders[0]?.["user-agent"]).toMatch(/^ethproxy\//);
+    await wss.close();
+  });
+
   it("sends configured headers on the persistent newHeads connection", async () => {
     const http = await startHttpMock();
     const wss = await startWsMock();

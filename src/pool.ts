@@ -4,6 +4,7 @@ import { parseQuantity, type JsonRpcResponse } from "./rpc.js";
 import { ReorgDetector, type ReorgEvent } from "./reorg.js";
 import {
   DEFAULT_UPSTREAM_COOLDOWN,
+  DEFAULT_USER_AGENT,
   Upstream,
   upstreamWsUrl,
   type UpstreamStatus,
@@ -411,20 +412,27 @@ export class UpstreamPool {
       }
       const syncingRes = byId.get(1);
       const blockRes = byId.get(2);
-      if (!syncingRes || !blockRes || syncingRes.error || blockRes.error) {
+      // eth_blockNumber is the one mandatory field: without it we know
+      // nothing about the node. eth_syncing is optional (like eth_chainId
+      // below) — some public providers do not serve it (e.g. fullsend
+      // answers -32601), and treating that as a failure would keep an
+      // otherwise usable node permanently unhealthy.
+      if (!blockRes || blockRes.error) {
         throw new Error("unexpected poll response");
       }
-      u.syncing = syncingRes.result !== false;
-      // Feed the mirror from the poll too: it is the fallback source while
-      // an upstream's WS is down (eth_syncing is requested here anyway).
-      if (
-        syncingRes.result === false ||
-        (typeof syncingRes.result === "object" && syncingRes.result !== null)
-      ) {
-        this.updateSyncing(
-          u.name,
-          syncingRes.result as false | Record<string, unknown>,
-        );
+      if (syncingRes && !syncingRes.error) {
+        u.syncing = syncingRes.result !== false;
+        // Feed the mirror from the poll too: it is the fallback source while
+        // an upstream's WS is down (eth_syncing is requested here anyway).
+        if (
+          syncingRes.result === false ||
+          (typeof syncingRes.result === "object" && syncingRes.result !== null)
+        ) {
+          this.updateSyncing(
+            u.name,
+            syncingRes.result as false | Record<string, unknown>,
+          );
+        }
       }
       u.blockNumber = parseQuantity(blockRes.result);
       if (u.blockNumber === null) throw new Error("bad eth_blockNumber");
@@ -495,7 +503,9 @@ export class UpstreamPool {
     const timeoutMs = Math.min(this.health.requestTimeoutMs, 5000);
     try {
       await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(url, { headers: u.config.headers });
+        const ws = new WebSocket(url, {
+          headers: { "user-agent": DEFAULT_USER_AGENT, ...u.config.headers },
+        });
         const timer = setTimeout(() => {
           ws.terminate();
           reject(new Error("ws probe timeout"));

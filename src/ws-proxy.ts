@@ -10,7 +10,7 @@ import {
   type JsonRpcId,
   type JsonRpcRequest,
 } from "./rpc.js";
-import { upstreamWsUrl } from "./upstream.js";
+import { upstreamWsUrl, DEFAULT_USER_AGENT } from "./upstream.js";
 
 export interface WsLogger {
   info: (msg: string, ...args: unknown[]) => void;
@@ -199,7 +199,10 @@ class WsClientSession {
     if (!upstream) return null;
 
     const conn = new WebSocket(upstreamWsUrl(upstream), {
-      headers: upstream.config.headers,
+      headers: {
+        "user-agent": DEFAULT_USER_AGENT,
+        ...upstream.config.headers,
+      },
     });
     conn.on("message", (data) => this.onUpstreamMessage(data));
     conn.on("close", () => {
