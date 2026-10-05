@@ -552,26 +552,39 @@ export class UpstreamPool {
    * Weighted round-robin over eligible upstreams. Returns up to `count`
    * distinct upstreams in attempt order (for failover retries).
    * When minBlock is set, only upstreams that have that block are picked.
+   * When methods is set, upstreams whose configured allow/deny list cannot
+   * serve them are excluded; a batch passes every one of its methods, so an
+   * upstream is dropped whenever it may not serve even a single item.
    */
-  select(count = 1, minBlock?: number): Upstream[] {
-    let candidates = this.eligible();
-    if (minBlock !== undefined) {
-      candidates = candidates.filter(
-        (u) => u.blockNumber !== null && u.blockNumber >= minBlock,
-      );
-    }
-    return this.pick(candidates, count);
+  select(count = 1, minBlock?: number, methods?: readonly string[]): Upstream[] {
+    return this.selectWhere(count, minBlock, methods);
   }
 
   /**
    * Like select(), but restricted to upstreams whose WebSocket endpoint
    * responded to the latest probe. Used for WS forwarding.
    */
-  selectWs(count = 1): Upstream[] {
-    return this.pick(
-      this.eligible().filter((u) => u.wsHealthy === true),
-      count,
-    );
+  selectWs(count = 1, methods?: readonly string[]): Upstream[] {
+    return this.selectWhere(count, undefined, methods, true);
+  }
+
+  private selectWhere(
+    count: number,
+    minBlock?: number,
+    methods?: readonly string[],
+    wsOnly = false,
+  ): Upstream[] {
+    let candidates = this.eligible();
+    if (wsOnly) candidates = candidates.filter((u) => u.wsHealthy === true);
+    if (methods !== undefined && methods.length > 0) {
+      candidates = candidates.filter((u) => u.canServeMethods(methods));
+    }
+    if (minBlock !== undefined) {
+      candidates = candidates.filter(
+        (u) => u.blockNumber !== null && u.blockNumber >= minBlock,
+      );
+    }
+    return this.pick(candidates, count);
   }
 
   private pick(candidates: Upstream[], count: number): Upstream[] {

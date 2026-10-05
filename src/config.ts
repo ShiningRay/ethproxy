@@ -9,6 +9,21 @@ const upstreamRateLimitSchema = z.object({
   burst: z.number().int().positive().optional(),
 });
 
+const upstreamMethodsSchema = z.object({
+  /**
+   * Whitelist: only these methods may be forwarded to the upstream; every
+   * other method excludes it from selection for that request. Entry is an
+   * exact method name or a namespace glob ending in "*" (e.g. "debug_*").
+   */
+  allow: z.array(z.string().min(1)).optional(),
+  /**
+   * Blacklist: methods that must never be forwarded to the upstream (public
+   * nodes commonly restrict archive-style calls per method). Same entry
+   * syntax as `allow`. Takes precedence over `allow` when both are set.
+   */
+  deny: z.array(z.string().min(1)).optional(),
+});
+
 const upstreamSchema = z.object({
   name: z.string().min(1),
   url: z.string().url(),
@@ -35,6 +50,15 @@ const upstreamSchema = z.object({
    * config file out of version control.
    */
   headers: z.record(z.string(), z.string()).optional(),
+  /**
+   * Method-level routing restrictions for this upstream: some providers only
+   * serve a subset of RPC methods (publicnode's free tier rejects
+   * eth_getTransactionReceipt), and others are only wanted for specific
+   * namespaces. When a request contains a method the upstream may not
+   * serve, the upstream is simply not selected for it — other upstreams
+   * answer instead, so the request never fails on a known restriction.
+   */
+  methods: upstreamMethodsSchema.optional(),
 });
 
 const healthSchema = z.object({
@@ -269,6 +293,7 @@ const configSchema = z.object({
 export type Config = z.infer<typeof configSchema>;
 export type UpstreamConfig = z.infer<typeof upstreamSchema>;
 export type UpstreamRateLimitConfig = z.infer<typeof upstreamRateLimitSchema>;
+export type UpstreamMethodsConfig = z.infer<typeof upstreamMethodsSchema>;
 export type UpstreamCooldownConfig = z.infer<typeof upstreamCooldownSchema>;
 export type HealthConfig = z.infer<typeof healthSchema>;
 export type CacheConfig = z.infer<typeof cacheSchema>;

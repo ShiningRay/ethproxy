@@ -77,6 +77,21 @@ export function isRateLimitMessage(message: unknown): boolean {
   );
 }
 
+/**
+ * True when `method` matches a configured pattern. A pattern is either an
+ * exact method name or a namespace glob ending in "*", which matches any
+ * method starting with the prefix ("debug_*" matches "debug_traceCall").
+ */
+export function methodMatchesPattern(
+  method: string,
+  pattern: string,
+): boolean {
+  if (pattern.endsWith("*")) {
+    return method.startsWith(pattern.slice(0, -1));
+  }
+  return method === pattern;
+}
+
 /** Parse a Retry-After header (delta-seconds or HTTP-date) into ms from now. */
 export function parseRetryAfter(
   header: unknown,
@@ -219,6 +234,29 @@ export class Upstream {
   /** Milliseconds until the next pacing token; 0 when ready or unlimited. */
   msUntilToken(now = Date.now()): number {
     return this.bucket === null ? 0 : this.bucket.msUntilReady(now);
+  }
+
+  // ---- method whitelist / blacklist (config.methods) ----
+
+  /**
+   * True when this upstream may serve the given set of methods (one
+   * JSON-RPC call, or every item of a batch). `deny` wins over `allow`;
+   * with neither configured everything is allowed.
+   */
+  canServeMethods(methods: readonly string[]): boolean {
+    const m = this.config.methods;
+    if (m === undefined) return true;
+    if (m.deny !== undefined && m.deny.length > 0) {
+      for (const method of methods) {
+        if (m.deny.some((p) => methodMatchesPattern(method, p))) return false;
+      }
+    }
+    if (m.allow !== undefined && m.allow.length > 0) {
+      for (const method of methods) {
+        if (!m.allow.some((p) => methodMatchesPattern(method, p))) return false;
+      }
+    }
+    return true;
   }
 
   /**

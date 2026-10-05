@@ -25,6 +25,13 @@ upstreams:
     # headers:
     #   Authorization: Bearer <api-key>
     #   x-api-key: <api-key>
+    # 方法级路由黑白名单：声明该上游可/不可承载哪些 RPC 方法，选路时自动回避，
+    # 请求因此改由其他节点承载，不会因该节点的已知限制而失败（如 publicnode 免费档
+    # 对 eth_getTransactionReceipt 一律 403）。条目为方法全名或命名空间通配（"debug_*"）。
+    # deny 优先于 allow；两者都不配即不限制。
+    # methods:
+    #   deny: [eth_getTransactionReceipt, debug_*]
+    #   allow: [eth_*, net_*]
   - name: node-b
     url: http://127.0.0.1:28545
     weight: 1

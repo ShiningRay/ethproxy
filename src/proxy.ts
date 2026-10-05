@@ -557,7 +557,11 @@ export class ProxyHandler {
     );
 
     // 2. Non-cacheable misses go upstream as one batch, merged by id.
-    //    Cacheable misses go through the single-flight path per key.
+    //    Cacheable misses go through the single-flight path per key. A batch
+    //    is forwarded whole, so forwardBatch filters upstreams by the union
+    //    of the batch's methods: an upstream that may not serve even one
+    //    item (e.g. publicnode and eth_getTransactionReceipt) is skipped for
+    //    the whole batch rather than failing it.
     const plainMisses = misses.filter((m) => m.key === null);
     const cacheableMisses = misses.filter((m) => m.key !== null);
 
@@ -909,14 +913,18 @@ export class ProxyHandler {
   }> {
     const noRetry = requests.some((r) => NO_RETRY_METHODS.has(r.method));
     const attempts = noRetry || opts.pinned ? 1 : this.config.health.maxRetries;
+    // Method-level routing: an upstream that may not serve any of the
+    // request's methods is not a candidate, so the request never fails on a
+    // restriction we already know about.
+    const methods = requests.map((r) => r.method);
     let picks = opts.pinned
       ? [opts.pinned]
-      : this.pool.select(attempts, opts.minBlock);
+      : this.pool.select(attempts, opts.minBlock, methods);
     let downgraded = false;
     let upstreamMs = 0;
 
     if (picks.length === 0 && opts.minBlock !== undefined) {
-      picks = this.pool.select(attempts);
+      picks = this.pool.select(attempts, undefined, methods);
       downgraded = true;
       if (opts.downgradeTo) requests = opts.downgradeTo;
     }

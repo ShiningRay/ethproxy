@@ -193,10 +193,14 @@ class WsClientSession {
       return this.subConn;
     }
 
-    const upstream = this.pool.selectWs(1)[0];
+    // Method restrictions apply to pinned subscription connections too: an
+    // upstream configured not to serve eth_subscribe is not chosen.
+    const upstream = this.pool.selectWs(1, ["eth_subscribe"])[0];
     if (!upstream) return null;
 
-    const conn = new WebSocket(upstreamWsUrl(upstream));
+    const conn = new WebSocket(upstreamWsUrl(upstream), {
+      headers: upstream.config.headers,
+    });
     conn.on("message", (data) => this.onUpstreamMessage(data));
     conn.on("close", () => {
       this.subConn = null;
