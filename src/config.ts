@@ -28,6 +28,13 @@ const upstreamSchema = z.object({
    * a rate-limit JSON-RPC error).
    */
   cooldownMs: z.number().int().positive().optional(),
+  /**
+   * Extra HTTP headers sent with every request to this upstream: JSON-RPC
+   * POSTs (including health polls) and the WebSocket handshake. Header
+   * names are case-insensitive; values may carry API keys — keep the
+   * config file out of version control.
+   */
+  headers: z.record(z.string(), z.string()).optional(),
 });
 
 const healthSchema = z.object({

@@ -495,7 +495,7 @@ export class UpstreamPool {
     const timeoutMs = Math.min(this.health.requestTimeoutMs, 5000);
     try {
       await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(url);
+        const ws = new WebSocket(url, { headers: u.config.headers });
         const timer = setTimeout(() => {
           ws.terminate();
           reject(new Error("ws probe timeout"));

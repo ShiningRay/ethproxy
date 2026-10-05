@@ -56,6 +56,7 @@ See [config.example.yaml](config.example.yaml). Key options:
 | `upstreams[].url` / `weight` / `wsUrl` | Upstream HTTP endpoint, weight, and WS endpoint (derived from `url` when unset) | — |
 | `upstreams[].rateLimit` | Client-side pacing (token bucket) capping the request rate sent to this upstream: `requestsPerSecond` + optional `burst` (default ceil of the rate). An empty bucket prefers other upstreams — wait only when none is ready. One token per HTTP request (a batch counts once) | — (unlimited) |
 | `upstreams[].cooldownMs` | Per-upstream override of `upstreamCooldown.defaultMs` | — |
+| `upstreams[].headers` | Extra HTTP headers sent with every request to this upstream — JSON-RPC POSTs (including health polls) and the WebSocket handshake. Names are case-insensitive; values may carry API keys (keep the config out of VCS) | — |
 | `upstreamCooldown.defaultMs` / `maxMs` | Cooldown after a rate-limit response (HTTP 429 or rate-limit RPC error): routing and health polls skip the upstream until it expires; `maxMs` caps `Retry-After`-derived values | 15000 / 300000 |
 | `statusPagePath` | Path of the HTML status page; `false` disables the page entirely (`/status` JSON is unaffected) | `/` |
 | `chainId` | Expected chain id (e.g. 1 = mainnet); majority wins when unset | auto-detect |

@@ -56,6 +56,7 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `upstreams[].url` / `weight` | 上游节点地址与权重 | — |
 | `upstreams[].rateLimit` | 客户端侧令牌桶限速：限制代理发往该上游的请求速率（`requestsPerSecond`，可选 `burst`，缺省 ceil(速率)）。桶空时优先选其他上游，全都没有才等待；每 HTTP 请求计 1 令牌（批量算 1） | —（不限） |
 | `upstreams[].cooldownMs` | 该上游的限流冷却时长（覆盖 `upstreamCooldown.defaultMs`） | — |
+| `upstreams[].headers` | 附加到该上游每个请求的 HTTP 头：JSON-RPC POST（含健康轮询）与 WebSocket 握手均带上。头名大小写不敏感；值可能含 API key（配置文件勿入版本库） | — |
 | `upstreamCooldown.defaultMs` / `maxMs` | 上游返回限流响应后的冷却时长：冷却期内选路跳过、健康轮询暂停；`maxMs` 为冷却上限（含 `Retry-After` 推算值） | 15000 / 300000 |
 | `statusPagePath` | 状态展示页路径；`false` 完全禁用页面（`/status` JSON 接口不受影响） | `/` |
 | `chainId` | 期望的链 ID（如 1 = 主网）；不配则取多数节点为准 | 自动检测 |

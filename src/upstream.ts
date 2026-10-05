@@ -297,7 +297,8 @@ export class Upstream {
     try {
       res = await request(this.config.url, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        // Upstream-configured headers may override the default content type.
+        headers: { "content-type": "application/json", ...this.config.headers },
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(timeoutMs),
       });

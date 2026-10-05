@@ -20,6 +20,11 @@ upstreams:
     #   burst: 20              # 突发容量，缺省 ceil(requestsPerSecond)
     # 该上游返回限流响应后的冷却时长（毫秒），覆盖全局 upstreamCooldown.defaultMs
     # cooldownMs: 30000
+    # 附加到该上游每个请求的 HTTP 头：JSON-RPC POST（含健康轮询）与 WebSocket 握手均带上。
+    # 用于需 API key 或自定义头的节点；值可能含密钥，配置文件勿入版本库。
+    # headers:
+    #   Authorization: Bearer <api-key>
+    #   x-api-key: <api-key>
   - name: node-b
     url: http://127.0.0.1:28545
     weight: 1

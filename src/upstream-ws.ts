@@ -87,7 +87,9 @@ export class UpstreamWsConnection {
 
   private connect(): Promise<void> {
     return new Promise((resolve) => {
-      const ws = new WebSocket(upstreamWsUrl(this.upstream));
+      const ws = new WebSocket(upstreamWsUrl(this.upstream), {
+        headers: this.upstream.config.headers,
+      });
       this.ws = ws;
       /**
        * Set when WE initiate the teardown (connect timeout, ping watchdog),
