@@ -77,9 +77,12 @@ See [config.example.yaml](config.example.yaml). Key options:
 | `cache.dynamicTtl` | Derive short TTL from the observed block interval (interval/4, clamped to `[minTtlMs, shortTtlMs]`) | true |
 | `cache.finalityDepth` | Depth below which blocks are treated as immutable | 64 |
 | `cache.redis.url` / `keyPrefix` | Redis connection and key prefix | — |
-| `cache.filesystem.dir` | Directory for cache files (`backend: filesystem`); created on demand, contents are plain files (one JSON envelope per entry, sharded into 256 subdirectories) | `./cache` |
-| `cache.filesystem.sweepIntervalMs` | Background sweep period: removes expired/corrupt files and enforces `maxBytes`; `0` disables (expired entries still drop lazily on read) | 60000 |
-| `cache.filesystem.maxBytes` | Soft disk budget; when a sweep finds the total above it, oldest-written files are evicted first | 1073741824 |
+| `cache.filesystem.dir` | Directory for cache files (`backend: filesystem`); created on demand, contents are plain files (one JSON envelope per entry). Expiring entries live in time buckets (`t/`), permanent ones in 256 shards (`p/`), and short-TTL entries stay in a bounded in-memory tier | `./cache` |
+| `cache.filesystem.sweepIntervalMs` | Background sweep period: deletes whole expired buckets and enforces `maxBytes`; `0` disables (expired entries still drop lazily on read) | 60000 |
+| `cache.filesystem.maxBytes` | Soft disk budget; when a sweep finds the total above it, oldest buckets and oldest-written permanent files are evicted first | 1073741824 |
+| `cache.filesystem.inlineTtlMs` | Entries with a TTL at or below this are kept in a bounded in-memory LRU instead of on disk — high-cardinality short-TTL keys written one-file-per-entry would otherwise churn the kernel's dentry/inode caches, which cgroup accounting reports as memory growth; `0` disables | 60000 |
+| `cache.filesystem.inlineMaxEntries` | Max entries held by the in-memory tier | 10000 |
+| `cache.filesystem.bucketMs` | Time-bucket width for on-disk expiring entries; the sweep removes whole expired buckets without stat-ing or reading individual files | 3600000 |
 | `security.blockedNamespaces` | RPC namespaces rejected outright | admin, personal, debug, trace, miner, txpool |
 | `security.maxBatchSize` / `maxBodyBytes` / `maxLogsRange` | Batch element limit, body size limit, `eth_getLogs` span limit | 100 / 1MB / 10000 |
 | `rateLimit.enabled` | Per-client-IP rate limiting (HTTP 429 / WS error -32005) | true |
