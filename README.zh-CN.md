@@ -73,9 +73,12 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `cache.dynamicTtl` | 按观测出块间隔动态调整短 TTL（间隔/4，钳制在 `[minTtlMs, shortTtlMs]`） | true |
 | `cache.finalityDepth` | 多少块深度视为不可变 | 64 |
 | `cache.redis.url` / `keyPrefix` | Redis 连接与键前缀 | — |
-| `cache.filesystem.dir` | 缓存文件目录（`backend: filesystem` 时生效）；按需创建，每条目一个 JSON 文件，散列到 256 个子目录 | `./cache` |
-| `cache.filesystem.sweepIntervalMs` | 后台清扫周期：删除过期/损坏文件并执行 `maxBytes` 预算；`0` 关闭清扫（过期条目仍在读取时惰性删除） | 60000 |
-| `cache.filesystem.maxBytes` | 磁盘占用软上限；清扫发现超限时从最旧文件开始驱逐 | 1073741824 |
+| `cache.filesystem.dir` | 缓存文件目录（`backend: filesystem` 时生效）；按需创建，每条目一个 JSON 文件：带过期时间的条目按时间分桶（`t/`），永久条目散列到 256 个子目录（`p/`），短 TTL 条目驻留在有界的内存层 | `./cache` |
+| `cache.filesystem.sweepIntervalMs` | 后台清扫周期：整桶删除过期分桶并执行 `maxBytes` 预算；`0` 关闭清扫（过期条目仍在读取时惰性删除） | 60000 |
+| `cache.filesystem.maxBytes` | 磁盘占用软上限；清扫发现超限时先整桶驱逐最旧分桶，再驱逐最旧的永久文件 | 1073741824 |
+| `cache.filesystem.inlineTtlMs` | TTL 不超过该值的条目驻留在有界的内存 LRU 中而不落盘——高基数的短 TTL key 若每条一文件，会持续搅动内核 dentry/inode 缓存，在 cgroup 内存统计中表现为缓慢上涨；`0` 关闭 | 60000 |
+| `cache.filesystem.inlineMaxEntries` | 内存层最大条目数 | 10000 |
+| `cache.filesystem.bucketMs` | 落盘过期条目的时间分桶宽度；清扫直接整桶删除过期分桶，无需逐文件 stat 或读内容 | 3600000 |
 | `security.blockedNamespaces` | 直接拒绝的 RPC 命名空间 | admin, personal, debug, trace, miner, txpool |
 | `security.maxBatchSize` / `maxBodyBytes` / `maxLogsRange` | 批量大小、请求体、`eth_getLogs` 跨度上限 | 100 / 1MB / 10000 |
 | `rateLimit.enabled` | 按客户端 IP 限速总开关（HTTP 429 / WS 返回 -32005） | true |

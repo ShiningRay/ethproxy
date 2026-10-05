@@ -98,6 +98,9 @@ export function createCacheBackend(config: CacheConfig): CacheBackend {
       return new FilesystemCacheBackend(config.filesystem?.dir ?? "./cache", {
         sweepIntervalMs: config.filesystem?.sweepIntervalMs ?? 60000,
         maxBytes: config.filesystem?.maxBytes ?? 1073741824,
+        inlineTtlMs: config.filesystem?.inlineTtlMs ?? 60000,
+        inlineMaxEntries: config.filesystem?.inlineMaxEntries ?? 10000,
+        bucketMs: config.filesystem?.bucketMs ?? 3600000,
       });
   }
 }

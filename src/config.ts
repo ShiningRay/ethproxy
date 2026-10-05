@@ -80,6 +80,25 @@ const cacheSchema = z.object({
       sweepIntervalMs: z.number().int().nonnegative().default(60000),
       /** Soft disk budget; oldest-written files are evicted first. */
       maxBytes: z.number().int().positive().default(1073741824),
+      /**
+       * Entries with a TTL at or below this are kept in a bounded in-memory
+       * LRU instead of on disk. High-cardinality short-TTL entries (per-call
+       * eth_call keys) written one-file-per-entry make the kernel's
+       * dentry/inode cache balloon, which reads as a slow "memory leak" in
+       * cgroup accounting. 0 disables the in-memory tier. Should stay well
+       * below unfinalizedTtlMs so head-tracking entries remain on disk.
+       */
+      inlineTtlMs: z.number().int().nonnegative().default(60000),
+      /** Max entries held by the in-memory tier. */
+      inlineMaxEntries: z.number().int().positive().default(10000),
+      /**
+       * On-disk expiring entries are grouped into time buckets of this many
+       * ms (bucket = floor(expiry/bucketMs)); the sweep deletes whole
+       * expired buckets instead of stat-ing/reading every file. Current
+       * buckets age out one sweep late at worst; reads validate expiry from
+       * the stored envelope regardless.
+       */
+      bucketMs: z.number().int().positive().default(3600000),
     })
     .optional(),
 });
