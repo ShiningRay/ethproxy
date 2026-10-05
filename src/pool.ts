@@ -582,13 +582,39 @@ export class UpstreamPool {
     const picks: Upstream[] = [];
     const seen = new Set<string>();
     const limit = Math.min(count, candidates.length);
-    for (let i = 0; i < weighted.length && picks.length < limit; i++) {
+    // Primary pick: unchanged weighted round-robin over the flat list.
+    const primary = weighted[this.selectionCursor % weighted.length]!;
+    picks.push(primary);
+    seen.add(primary.name);
+    this.selectionCursor = (this.selectionCursor + 1) % weighted.length;
+    if (picks.length >= limit) return picks;
+
+    // Failover picks: take the j-th candidate at a diametrically spread
+    // offset from the primary instead of walking the list consecutively.
+    // Consecutive scanning returns neighbours, and two upstreams of
+    // *different* providers can be neighbours (or the same provider
+    // replicated, for weight > 1) while sharing a method-level restriction —
+    // e.g. two publicnode endpoints both rejecting eth_getTransactionReceipt
+    // with HTTP 403. Retrying those back to back fails the whole request.
+    // The offsets floor(len * j / limit) are strictly increasing and below
+    // the list length, so the candidates are distinct positions and, when
+    // the list is large enough, never adjacent to the primary. The primary
+    // pick above is untouched, so weighted round-robin is unchanged.
+    for (let j = 1; picks.length < limit && j < limit; j++) {
+      const offset = Math.floor((weighted.length * j) / limit);
+      const u = weighted[(this.selectionCursor - 1 + offset) % weighted.length]!;
+      if (seen.has(u.name)) continue;
+      seen.add(u.name);
+      picks.push(u);
+    }
+    // Rare shortfall (duplicate names collapsed the offsets): fill any
+    // remaining slots from the list in order.
+    for (let i = 0; picks.length < limit && i < weighted.length; i++) {
       const u = weighted[(this.selectionCursor + i) % weighted.length]!;
       if (seen.has(u.name)) continue;
       seen.add(u.name);
       picks.push(u);
     }
-    this.selectionCursor = (this.selectionCursor + 1) % weighted.length;
     return picks;
   }
 

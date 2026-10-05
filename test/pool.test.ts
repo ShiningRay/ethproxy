@@ -184,6 +184,36 @@ describe("UpstreamPool", () => {
     expect(counts.get("b")).toBe(10);
   });
 
+  it("spreads failover picks so neighbouring upstreams are not retried back to back", async () => {
+    const a = await startMockNode({});
+    const b = await startMockNode({});
+    const c = await startMockNode({});
+    const d = await startMockNode({});
+    const pool = new UpstreamPool(
+      [
+        { name: "a", url: a.url, weight: 1 },
+        { name: "b", url: b.url, weight: 1 },
+        { name: "c", url: c.url, weight: 1 },
+        { name: "d", url: d.url, weight: 1 },
+      ],
+      health,
+    );
+    await pool.pollAll();
+
+    // With maxRetries = 2 the failover set must never be two neighbours:
+    // providers that share a method-level restriction (e.g. returning 403
+    // for the same methods) are commonly configured adjacent, and retrying
+    // them back to back fails the request outright.
+    for (let i = 0; i < 12; i++) {
+      const picks = pool.select(2).map((u) => u.name);
+      expect(picks).toHaveLength(2);
+      const idx = picks.map((n) => ["a", "b", "c", "d"].indexOf(n));
+      const adjacent =
+        (idx[0]! + 1) % 4 === idx[1] || (idx[1]! + 1) % 4 === idx[0];
+      expect(adjacent).toBe(false);
+    }
+  });
+
   it("excludes nodes on a different chain than the configured chainId", async () => {
     const mainnet = await startMockNode({ chainId: 1 });
     const bsc = await startMockNode({ chainId: 56 });
