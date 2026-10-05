@@ -6,7 +6,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { FilesystemCacheBackend } from "../src/cache/filesystem.js";
@@ -91,7 +91,7 @@ describe("FilesystemCacheBackend", () => {
     const d = digest("k");
     const files = await allFiles(dir);
     expect(files).toHaveLength(1);
-    const [tDir, bucket, file] = files[0]!.split("/");
+    const [tDir, bucket, file] = files[0]!.split(sep);
     expect(tDir).toBe("t");
     expect(Number(bucket)).toBeGreaterThan(0);
     expect(file).toBe(d);
