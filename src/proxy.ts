@@ -42,7 +42,7 @@ export interface ProxyLogger {
   warn: (msg: string, ...args: unknown[]) => void;
 }
 
-type CacheOutcome = "hit" | "miss" | "local" | "error";
+type CacheOutcome = "hit" | "miss" | "local" | "write" | "error";
 
 interface RequestMetrics {
   upstreamMs: number;
@@ -51,12 +51,13 @@ interface RequestMetrics {
 }
 
 function formatCacheSummary(outcomes: CacheOutcome[]): string {
-  const counts = { hit: 0, miss: 0, local: 0, error: 0 };
+  const counts = { hit: 0, miss: 0, local: 0, write: 0, error: 0 };
   for (const o of outcomes) counts[o] += 1;
   const parts: string[] = [];
   if (counts.hit) parts.push(`hit=${counts.hit}`);
   if (counts.miss) parts.push(`miss=${counts.miss}`);
   if (counts.local) parts.push(`local=${counts.local}`);
+  if (counts.write) parts.push(`write=${counts.write}`);
   if (counts.error) parts.push(`error=${counts.error}`);
   return parts.join(",") || "error";
 }
@@ -68,6 +69,25 @@ const NO_RETRY_METHODS = new Set([
   "eth_sign",
   "eth_signTransaction",
 ]);
+
+/**
+ * State-mutating methods that can never be cached, so every call is
+ * forwarded verbatim. These are counted as "write" instead of a cache miss:
+ * nothing was looked up or could ever be stored, and folding them into the
+ * miss counter would understate the read hit rate. Mirrors NO_RETRY_METHODS
+ * but is kept separate — retry policy and cache accounting are independent.
+ */
+const WRITE_METHODS = new Set([
+  "eth_sendRawTransaction",
+  "eth_sendTransaction",
+  "eth_sign",
+  "eth_signTransaction",
+]);
+
+/** True for methods that mutate chain or account state (never cacheable). */
+export function isWriteMethod(method: string): boolean {
+  return WRITE_METHODS.has(method);
+}
 
 /**
  * Effective short TTL for head-dependent data. With dynamicTtl enabled and
@@ -140,6 +160,30 @@ export class ProxyHandler {
    * head and locally served block-filter calls.
    */
   private readonly localAnswers = { blockNumber: 0, filters: 0 };
+
+  /**
+   * Forwarded state-mutating calls (eth_sendRawTransaction etc.). Tracked
+   * separately from cache lookups: these are never cacheable, so counting
+   * them as misses would drag the hit rate down for work the cache was
+   * never meant to serve.
+   */
+  private readonly writeCalls = { total: 0, byMethod: new Map<string, number>() };
+
+  private countWrite(method: string): void {
+    this.writeCalls.total += 1;
+    this.writeCalls.byMethod.set(
+      method,
+      (this.writeCalls.byMethod.get(method) ?? 0) + 1,
+    );
+  }
+
+  /** Total forwarded write calls, plus the per-method breakdown. */
+  writeStats(): { total: number; byMethod: Record<string, number> } {
+    return {
+      total: this.writeCalls.total,
+      byMethod: Object.fromEntries(this.writeCalls.byMethod),
+    };
+  }
 
   /**
    * Aggregate of responses served entirely from local data: cache hits plus
@@ -537,7 +581,7 @@ export class ProxyHandler {
         const policy = this.policyFor(request.method, params, ctx);
         if (!policy.cacheable) {
           misses.push({ index, request, original, minBlock, key: null });
-          caches[index] = "miss";
+          caches[index] = isWriteMethod(request.method) ? "write" : "miss";
           return;
         }
         const key = this.keyFor(request.method, params);
@@ -586,6 +630,7 @@ export class ProxyHandler {
         results[index] =
           response ??
           errorResponse(request.id, -32003, "upstream did not answer this batch item");
+        if (isWriteMethod(request.method)) this.countWrite(request.method);
       }
     }
 
@@ -674,7 +719,14 @@ export class ProxyHandler {
     );
     metrics.upstreamMs += upstreamMs;
     if (upstreamName) metrics.upstreamNames.add(upstreamName);
-    metrics.cacheSummary = "miss";
+    // Write methods are never cacheable — neither a hit nor a miss; count
+    // them on their own axis so the read hit rate stays meaningful.
+    if (isWriteMethod(request.method)) {
+      this.countWrite(request.method);
+      metrics.cacheSummary = "write";
+    } else {
+      metrics.cacheSummary = "miss";
+    }
     return responses[0] ?? errorResponse(request.id, -32003, "upstream error");
   }
 

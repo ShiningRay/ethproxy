@@ -132,6 +132,18 @@ const localResponses = new Gauge({
   registers: [registry],
 });
 
+/**
+ * Forwarded state-mutating calls (eth_sendRawTransaction etc.). Kept apart
+ * from the cache counters: these are never cacheable, so they are neither
+ * hits nor misses.
+ */
+const writeCalls = new Gauge({
+  name: "ethproxy_write_calls_total",
+  help: "State-mutating (never cacheable) calls forwarded, by method",
+  labelNames: ["method"],
+  registers: [registry],
+});
+
 let bound: { pool: UpstreamPool; proxy: ProxyHandler } | null = null;
 
 /** Point the dynamic gauges at the running pool/proxy (called by buildServer). */
@@ -161,6 +173,10 @@ function refreshGauges(): void {
   localResponses.set({ kind: "cacheHit" }, local.cacheHits);
   localResponses.set({ kind: "blockNumber" }, local.blockNumber);
   localResponses.set({ kind: "filters" }, local.filters);
+  const writes = bound.proxy.writeStats();
+  for (const [method, count] of Object.entries(writes.byMethod)) {
+    writeCalls.set({ method }, count);
+  }
 }
 
 /** Render the Prometheus exposition text for scraping. */

@@ -117,6 +117,7 @@ export async function buildServer(
       })),
       cache: proxy.cacheStats(),
       local: proxy.localStats(),
+      writes: proxy.writeStats(),
     };
   });
 

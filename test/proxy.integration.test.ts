@@ -95,7 +95,11 @@ async function startMockNode(
   };
 }
 
-async function makeProxy(nodes: MockNode[], weights: number[] = []) {
+async function makeProxy(
+  nodes: MockNode[],
+  weights: number[] = [],
+  logger?: { info: (msg: string) => void; warn: (msg: string) => void },
+) {
   const config: Config = {
     listen: { host: "127.0.0.1", port: 0 },
     statusPagePath: "/",
@@ -153,6 +157,8 @@ async function makeProxy(nodes: MockNode[], weights: number[] = []) {
     pool,
     new ResponseCache(createCacheBackend(config.cache)),
     config,
+    undefined,
+    logger,
   );
   return { config, pool, proxy };
 }
@@ -266,6 +272,67 @@ describe("ProxyHandler", () => {
     await proxy.handle(req);
     await proxy.handle(req);
     expect(node.hits.get("eth_sendRawTransaction")).toBe(2);
+  });
+
+  it("counts write calls separately instead of as cache misses", async () => {
+    const logs: string[] = [];
+    const node = await startMockNode(1000, {
+      eth_sendRawTransaction: () => "0xtxhash",
+      eth_gasPrice: () => "0x3b9aca00",
+    });
+    const { proxy } = await makeProxy([node], [], {
+      info: (m) => logs.push(m),
+      warn: () => {},
+    });
+
+    // A cacheable read first: one real miss, then a hit.
+    await proxy.handle({ jsonrpc: "2.0" as const, id: 1, method: "eth_gasPrice", params: [] });
+    await proxy.handle({ jsonrpc: "2.0" as const, id: 2, method: "eth_gasPrice", params: [] });
+    const afterReads = proxy.cacheStats();
+
+    for (let i = 0; i < 3; i++) {
+      await proxy.handle({
+        jsonrpc: "2.0" as const,
+        id: 10 + i,
+        method: "eth_sendRawTransaction",
+        params: ["0xsigned"],
+      });
+    }
+
+    // The writes must not move the cache counters: nothing was ever looked
+    // up, so neither hits nor misses change.
+    expect(proxy.cacheStats()).toMatchObject({
+      hits: afterReads.hits,
+      misses: afterReads.misses,
+      sets: afterReads.sets,
+    });
+    expect(proxy.writeStats()).toEqual({
+      total: 3,
+      byMethod: { eth_sendRawTransaction: 3 },
+    });
+    // And they are labelled as writes in the request log, not as misses.
+    const writeLines = logs.filter((l) => l.includes("eth_sendRawTransaction"));
+    expect(writeLines).toHaveLength(3);
+    for (const line of writeLines) expect(line).toContain("cache=write");
+    expect(logs.some((l) => l.includes("eth_sendRawTransaction") && l.includes("cache=miss"))).toBe(false);
+  });
+
+  it("labels write methods in a batch without counting them as misses", async () => {
+    const logs: string[] = [];
+    const node = await startMockNode(1000, {
+      eth_sendRawTransaction: () => "0xtxhash",
+      eth_gasPrice: () => "0x3b9aca00",
+    });
+    const { proxy } = await makeProxy([node], [], {
+      info: (m) => logs.push(m),
+      warn: () => {},
+    });
+    await proxy.handle([
+      { jsonrpc: "2.0" as const, id: 1, method: "eth_gasPrice", params: [] },
+      { jsonrpc: "2.0" as const, id: 2, method: "eth_sendRawTransaction", params: ["0xsigned"] },
+    ]);
+    expect(logs.some((l) => l.includes("cache=miss=1,write=1"))).toBe(true);
+    expect(proxy.writeStats().total).toBe(1);
   });
 
   it("bypasses the cache entirely when cache.enabled is false", async () => {

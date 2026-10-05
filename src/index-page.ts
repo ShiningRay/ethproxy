@@ -62,6 +62,7 @@ export function renderIndexPage(meta: IndexPageMeta): string {
     <div class="card"><div class="label">Cache Hits</div><div class="value ok" id="hits">–</div></div>
     <div class="card"><div class="label">Cache Misses</div><div class="value" id="misses">–</div></div>
     <div class="card"><div class="label">Cache Stores</div><div class="value" id="sets">–</div></div>
+    <div class="card"><div class="label">Write Calls</div><div class="value" id="writes">–</div><div class="label" id="writeBreakdown" style="margin-top:0.3rem;text-transform:none"></div></div>
     <div class="card"><div class="label">Local Answers</div><div class="value ok" id="localTotal">–</div><div class="label" id="localBreakdown" style="margin-top:0.3rem;text-transform:none"></div></div>
   </div>
   <table>
@@ -105,6 +106,12 @@ async function refresh() {
         "cache " + s.local.cacheHits.toLocaleString() +
         " · blockNumber " + s.local.blockNumber.toLocaleString() +
         " · filters " + s.local.filters.toLocaleString();
+    }
+    if (s.writes) {
+      document.getElementById("writes").textContent = s.writes.total.toLocaleString();
+      const parts = Object.entries(s.writes.byMethod || {})
+        .map(([m, n]) => m.replace(/^eth_/, "") + " " + n.toLocaleString());
+      document.getElementById("writeBreakdown").textContent = parts.join(" · ");
     }
     document.getElementById("upstreams").innerHTML = s.upstreams.map(u => {
       const ok = u.healthy && !u.syncing;
