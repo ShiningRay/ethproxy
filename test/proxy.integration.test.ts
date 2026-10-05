@@ -242,6 +242,59 @@ describe("ProxyHandler", () => {
     expect(short.lastParams.get("eth_getBalance")).toEqual(["0xaddr", "latest"]);
   });
 
+  it("caches a null receipt (negative caching) and serves it on the next call", async () => {
+    let calls = 0;
+    const node = await startMockNode(1000, {
+      // An unmined / unknown transaction: the node answers null.
+      eth_getTransactionReceipt: () => {
+        calls += 1;
+        return null;
+      },
+    });
+    const { proxy } = await makeProxy([node]);
+    const req = {
+      jsonrpc: "2.0" as const,
+      id: 1,
+      method: "eth_getTransactionReceipt",
+      params: ["0xabsent"],
+    };
+
+    const first = await proxy.handle(req);
+    expect(first).toMatchObject({ result: null });
+    expect(calls).toBe(1);
+
+    // A null result is a legitimate cache value, not "no entry". It must be
+    // served from the cache without another upstream call — otherwise a
+    // client polling an unmined receipt hits the upstream every single time.
+    const second = await proxy.handle(req);
+    expect(second).toMatchObject({ result: null });
+    expect(calls).toBe(1);
+
+    const third = await proxy.handle(req);
+    expect(third).toMatchObject({ result: null });
+    expect(calls).toBe(1);
+  });
+
+  it("caches a null transaction lookup (not-found hash) too", async () => {
+    let calls = 0;
+    const node = await startMockNode(1000, {
+      eth_getTransactionByHash: () => {
+        calls += 1;
+        return null;
+      },
+    });
+    const { proxy } = await makeProxy([node]);
+    const req = {
+      jsonrpc: "2.0" as const,
+      id: 1,
+      method: "eth_getTransactionByHash",
+      params: ["0xabsent"],
+    };
+    expect(await proxy.handle(req)).toMatchObject({ result: null });
+    expect(await proxy.handle(req)).toMatchObject({ result: null });
+    expect(calls).toBe(1);
+  });
+
   it("permanently caches mined transaction receipts", async () => {
     const node = await startMockNode(1000, {
       eth_getTransactionReceipt: () => ({ blockHash: "0xabc", status: "0x1" }),

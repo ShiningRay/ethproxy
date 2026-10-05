@@ -353,7 +353,14 @@ export class ProxyHandler {
   }
 
   /**
-   * Read a cache entry, returning the parsed payload on hit, null on miss.
+   * Read a cache entry. Returns `{ hit: true, value }` when an entry exists
+   * and survived reorg validation, `{ hit: false }` otherwise.
+   *
+   * The hit flag is essential: a cached value may legitimately be `null`
+   * (eth_getTransactionReceipt for an unmined transaction, a not-found
+   * eth_getTransactionByHash, …), so `null` cannot double as "miss" — doing
+   * so made every negative-cache entry unreadable.
+   *
    * For the reorg-validated methods the entry is checked against the reorg
    * detector's canonical-chain view: a height whose canonical hash no longer
    * matches the entry's stamp was reorged — the entry is stale, deleted in
@@ -361,10 +368,13 @@ export class ProxyHandler {
    * (unstamped, null stamp, window gap, detector off) are trusted as-is;
    * the TTL remains the fallback for those.
    */
-  private async validatedGet(method: string, key: string): Promise<unknown | null> {
+  private async validatedGet(
+    method: string,
+    key: string,
+  ): Promise<{ hit: true; value: unknown } | { hit: false }> {
     const raw = await this.cache.get(key);
-    if (raw === null) return null;
-    if (!RAW_KEY_METHODS.has(method)) return JSON.parse(raw);
+    if (raw === null) return { hit: false };
+    if (!RAW_KEY_METHODS.has(method)) return { hit: true, value: JSON.parse(raw) };
 
     let height: number | null = null;
     let blockHash: string | null = null;
@@ -389,11 +399,11 @@ export class ProxyHandler {
         }
       }
     }
-    if (height === null || blockHash === null) return payload;
+    if (height === null || blockHash === null) return { hit: true, value: payload };
     const canonical = this.pool.canonicalHashAt(height);
-    if (canonical === null || canonical === blockHash) return payload;
+    if (canonical === null || canonical === blockHash) return { hit: true, value: payload };
     void this.cache.delete(key);
-    return null;
+    return { hit: false };
   }
 
   /** Answer eth_blockNumber from the locally observed pool head. */
@@ -586,11 +596,11 @@ export class ProxyHandler {
         }
         const key = this.keyFor(request.method, params);
         const cached = await this.validatedGet(request.method, key);
-        if (cached !== null) {
+        if (cached.hit) {
           results[index] = {
             jsonrpc: "2.0",
             id: request.id,
-            result: cached,
+            result: cached.value,
           };
           caches[index] = "hit";
           return;
@@ -691,9 +701,9 @@ export class ProxyHandler {
     if (policy.cacheable) {
       const key = this.keyFor(request.method, params);
       const cached = await this.validatedGet(request.method, key);
-      if (cached !== null) {
+      if (cached.hit) {
         metrics.cacheSummary = "hit";
-        return { jsonrpc: "2.0", id: request.id, result: cached };
+        return { jsonrpc: "2.0", id: request.id, result: cached.value };
       }
       const { response, upstreamMs, upstreamName } = await this.fetchAndStore(
         request,
