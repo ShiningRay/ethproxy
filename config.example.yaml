@@ -12,6 +12,14 @@ upstreams:
     # WebSocket 端点；不配则按 url 推导（http→ws, https→wss）
     # wsUrl: ws://127.0.0.1:18546
     weight: 2
+    # 客户端侧限速：限制代理发往该上游的请求速率（令牌桶，按 HTTP 请求计，
+    # 一个批量算一次）。桶里没有令牌时优先选择其他上游，全都没有才等待，
+    # 用于遵守上游服务商自己的配额、避免触发 429。不配则不限速。
+    # rateLimit:
+    #   requestsPerSecond: 10
+    #   burst: 20              # 突发容量，缺省 ceil(requestsPerSecond)
+    # 该上游返回限流响应后的冷却时长（毫秒），覆盖全局 upstreamCooldown.defaultMs
+    # cooldownMs: 30000
   - name: node-b
     url: http://127.0.0.1:28545
     weight: 1
@@ -98,3 +106,10 @@ cache:
   #   dir: ./cache              # 缓存目录，按需创建；Docker 部署建议挂卷
   #   sweepIntervalMs: 60000    # 后台清扫周期（删过期/损坏文件、执行 maxBytes）；0 关闭
   #   maxBytes: 1073741824      # 磁盘软上限（默认 1GiB），超限从最旧文件开始驱逐
+
+# 上游限流冷却（被动）：上游以 HTTP 429（按 Retry-After 头）或限流类
+# JSON-RPC error 拒绝请求时，代理将该上游停用一段时间——冷却期内选路
+# 跳过它、健康轮询也暂停，到期自动恢复。
+# upstreamCooldown:
+#   defaultMs: 15000          # 响应未带 Retry-After 时的缺省冷却（毫秒）
+#   maxMs: 300000             # 冷却上限（毫秒），含 Retry-After 推算值

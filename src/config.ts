@@ -2,12 +2,32 @@ import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
+const upstreamRateLimitSchema = z.object({
+  /** Max requests per second this proxy sends to the upstream. */
+  requestsPerSecond: z.number().positive(),
+  /** Burst capacity (token-bucket size); defaults to ceil(requestsPerSecond). */
+  burst: z.number().int().positive().optional(),
+});
+
 const upstreamSchema = z.object({
   name: z.string().min(1),
   url: z.string().url(),
   /** WebSocket endpoint; defaults to `url` with http(s) swapped to ws(s). */
   wsUrl: z.string().url().optional(),
   weight: z.number().int().positive().default(1),
+  /**
+   * Client-side pacing: cap the request rate sent to this upstream with a
+   * token bucket. Requests prefer upstreams whose bucket has a token ready
+   * and wait only when none is; health polls skip the round instead.
+   * One token per HTTP request (a batch counts once).
+   */
+  rateLimit: upstreamRateLimitSchema.optional(),
+  /**
+   * Overrides upstreamCooldown.defaultMs for this upstream: how long the
+   * upstream is parked after answering with a rate-limit error (HTTP 429 or
+   * a rate-limit JSON-RPC error).
+   */
+  cooldownMs: z.number().int().positive().optional(),
 });
 
 const healthSchema = z.object({
@@ -160,6 +180,16 @@ const corsSchema = z.object({
   origin: z.string().default("*"),
 });
 
+const upstreamCooldownSchema = z.object({
+  /**
+   * Cooldown applied after a rate-limit response when the upstream sent no
+   * Retry-After header and no per-upstream cooldownMs is configured (ms).
+   */
+  defaultMs: z.number().int().nonnegative().default(15000),
+  /** Upper bound applied to every cooldown, including Retry-After-derived ones (ms). */
+  maxMs: z.number().int().positive().default(300000),
+});
+
 const configSchema = z.object({
   listen: z
     .object({
@@ -197,6 +227,7 @@ const configSchema = z.object({
   syncing: syncingSchema.prefault({}),
   reorg: reorgSchema.prefault({}),
   cors: corsSchema.prefault({}),
+  upstreamCooldown: upstreamCooldownSchema.prefault({}),
 }).superRefine((cfg, ctx) => {
   // Read-time reorg validation is only sound when every unfinalized cached
   // height is covered by the detector's header window.
@@ -211,6 +242,8 @@ const configSchema = z.object({
 
 export type Config = z.infer<typeof configSchema>;
 export type UpstreamConfig = z.infer<typeof upstreamSchema>;
+export type UpstreamRateLimitConfig = z.infer<typeof upstreamRateLimitSchema>;
+export type UpstreamCooldownConfig = z.infer<typeof upstreamCooldownSchema>;
 export type HealthConfig = z.infer<typeof healthSchema>;
 export type CacheConfig = z.infer<typeof cacheSchema>;
 export type SecurityConfig = z.infer<typeof securitySchema>;

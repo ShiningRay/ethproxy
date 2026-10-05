@@ -8,6 +8,7 @@ Ethereum JSON-RPC 反向代理：多上游负载均衡与故障转移、同步�
 
 - **多上游**：加权 round-robin；传输层失败自动切换到下一个健康节点（`eth_sendRawTransaction` 等有副作用的方法不重试）
 - **健康与同步检查**：后台主动轮询 `eth_syncing` + `eth_blockNumber` + `eth_chainId`；同步中、连续失败超过阈值、或落后池内最大高度超过 `maxBlockLag` 的节点会被摘除，恢复后自动重新入池
+- **上游限速与限流退避**：可为每个上游配置令牌桶（`upstreams[].rateLimit`）限制代理发往该上游的请求速率——优先选择桶内有令牌的上游，全都没有才等待（健康轮询则跳过本轮）。上游仍返回限流信号时（HTTP 429——按 `Retry-After` 头——或限流类 JSON-RPC error），代理将其停用冷却（`upstreamCooldown.defaultMs`，上限 `maxMs`；可按上游覆盖 `cooldownMs`）：冷却期内选路跳过、健康轮询暂停，到期自动恢复；可重试请求遇 429 会故障转移到下一个上游
 - **newHeads 链高跟踪**：上游 WS 可用时，池为其维持一条持久的 `eth_subscribe("newHeads")` 连接，每收到通知即更新本地观测链高（断线指数退避重连）；WS 不可用或断开时自动回退为 HTTP 健康轮询获取块高。可用 `health.wsHeads: false` 关闭（块高仅来自 HTTP 轮询，WS 可用性改为每轮探测）
 - **重组检测**：对每个去重后的 newHeads 校验 parentHash 与近期区块头滑动窗口（`reorg.windowSize`，默认 128）的连续性。冲突先仲裁后告警——分歧头只有在被后续块接续、或被第二个不同上游报出相同哈希时才判定为重组，短暂不一致的节点不会产生误报。确认的重组会记录深度与分叉区间日志，计入 `ethproxy_reorgs_detected_total` / `ethproxy_reorg_depth` 指标，并经 `pool.onReorg` 广播。依赖 `health.wsHeads`（HTTP 轮询拿不到块哈希）
 - **新区块缓存加热**：每个 newHeads 推送都会被写入响应缓存，效果等同于刚应答过对应的 `eth_getBlockByNumber`/`eth_getBlockByHash`（推送只有区块头时，向推送方节点后台补拉一次完整块；推送自带交易列表时直接缓存）。条目使用链头短 TTL，重组的头块会很快过期；多个上游重复推送同一区块按哈希去重，只补拉一次
@@ -53,6 +54,9 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | 配置 | 说明 | 默认 |
 |---|---|---|
 | `upstreams[].url` / `weight` | 上游节点地址与权重 | — |
+| `upstreams[].rateLimit` | 客户端侧令牌桶限速：限制代理发往该上游的请求速率（`requestsPerSecond`，可选 `burst`，缺省 ceil(速率)）。桶空时优先选其他上游，全都没有才等待；每 HTTP 请求计 1 令牌（批量算 1） | —（不限） |
+| `upstreams[].cooldownMs` | 该上游的限流冷却时长（覆盖 `upstreamCooldown.defaultMs`） | — |
+| `upstreamCooldown.defaultMs` / `maxMs` | 上游返回限流响应后的冷却时长：冷却期内选路跳过、健康轮询暂停；`maxMs` 为冷却上限（含 `Retry-After` 推算值） | 15000 / 300000 |
 | `statusPagePath` | 状态展示页路径；`false` 完全禁用页面（`/status` JSON 接口不受影响） | `/` |
 | `chainId` | 期望的链 ID（如 1 = 主网）；不配则取多数节点为准 | 自动检测 |
 | `health.pollIntervalMs` | 健康轮询间隔 | 5000 |

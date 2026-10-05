@@ -344,6 +344,7 @@ function makeConfig(upstream: { name: string; url: string; wsUrl?: string }): Co
     syncing: { mirror: false },
     reorg: { enabled: true, windowSize: 128 },
     cors: { enabled: true, origin: "*" },
+    upstreamCooldown: { defaultMs: 15000, maxMs: 300000 },
   };
 }
 

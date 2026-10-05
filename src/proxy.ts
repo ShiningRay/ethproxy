@@ -392,6 +392,9 @@ export class ProxyHandler {
       }
       const pinned = this.pool.byName(upstreamName);
       if (pinned === undefined) return;
+      // Pacing: cache warming is best-effort — skip it rather than queue
+      // behind the upstream's rate limit.
+      if (!pinned.takeToken()) return;
       const body = await pinned.call({
         jsonrpc: "2.0",
         id: 0,
@@ -928,11 +931,14 @@ export class ProxyHandler {
     }
 
     const payload = requests.length === 1 ? requests[0] : requests;
-    for (const [attemptIndex, upstream] of picks.entries()) {
+    const queue = [...picks];
+    let attemptIndex = 0;
+    while (queue.length > 0) {
       // Exponential backoff between attempts (no delay before the first).
       if (attemptIndex > 0) {
         await sleep(retryDelayMs(attemptIndex, this.config.health));
       }
+      const upstream = await this.nextPacedUpstream(queue);
       try {
         const callStart = performance.now();
         const body = await upstream.call(payload);
@@ -949,6 +955,7 @@ export class ProxyHandler {
             `forwarding to ${upstream.name} failed, trying next upstream`,
             err.cause ?? err.message,
           );
+          attemptIndex += 1;
           continue;
         }
         throw err;
@@ -962,6 +969,36 @@ export class ProxyHandler {
       downgraded,
       upstreamMs,
     };
+  }
+
+  /**
+   * Take the next upstream to try from `queue`, honoring per-upstream
+   * pacing (config.rateLimit): an upstream whose bucket has a token ready
+   * goes first, in queue order. When none is ready, wait for the earliest
+   * refill, bounded by the upstream request timeout. If even that wait
+   * fails, send to the earliest-refill upstream anyway — availability wins
+   * over strict pacing, and the reactive rate-limit cooldown still parks
+   * upstreams after a 429.
+   */
+  private async nextPacedUpstream(queue: Upstream[]): Promise<Upstream> {
+    for (const u of queue) {
+      if (u.takeToken()) {
+        queue.splice(queue.indexOf(u), 1);
+        return u;
+      }
+    }
+    let best = queue[0]!;
+    for (const u of queue) {
+      if (u.msUntilToken() < best.msUntilToken()) best = u;
+    }
+    const ok = await best.waitAndTakeToken(this.config.health.requestTimeoutMs);
+    if (!ok) {
+      this.logger?.warn(
+        `upstream ${best.name} pacing bucket still empty after waiting; sending anyway`,
+      );
+    }
+    queue.splice(queue.indexOf(best), 1);
+    return best;
   }
 
   private async storeResult(

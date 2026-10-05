@@ -66,9 +66,9 @@ export function renderIndexPage(meta: IndexPageMeta): string {
   </div>
   <table>
     <thead><tr>
-      <th>Upstream</th><th>Status</th><th>Block</th><th>Chain ID</th><th>Syncing</th><th>WS</th><th>Latency</th><th>Calls</th><th>Failures</th>
+      <th>Upstream</th><th>Status</th><th>Block</th><th>Chain ID</th><th>Syncing</th><th>WS</th><th>Throttled</th><th>Latency</th><th>Calls</th><th>Failures</th>
     </tr></thead>
-    <tbody id="upstreams"><tr><td colspan="9" class="muted">loading…</td></tr></tbody>
+    <tbody id="upstreams"><tr><td colspan="10" class="muted">loading…</td></tr></tbody>
   </table>
   <div id="error"></div>
   <footer>
@@ -111,12 +111,16 @@ async function refresh() {
       const ws = u.wsHealthy === true ? '<td class="ok">● ok</td>'
         : u.wsHealthy === false ? '<td class="bad">● down</td>'
         : '<td class="muted">–</td>';
+      const throttled = u.throttled
+        ? '<td class="bad">● ' + Math.max(0, Math.ceil((u.throttledUntil - Date.now()) / 1000)) + "s</td>"
+        : '<td class="muted">–</td>';
       return "<tr><td>" + u.name + ' <span class="muted">' + u.url + "</span></td>" +
         '<td class="' + (ok ? "ok" : "bad") + '">' + (ok ? "● healthy" : "● down") + "</td>" +
         "<td>" + (u.blockNumber === null ? "–" : u.blockNumber.toLocaleString()) + "</td>" +
         "<td>" + (u.chainId ?? "–") + "</td>" +
         "<td>" + (u.syncing ? "yes" : "no") + "</td>" +
         ws +
+        throttled +
         "<td>" + (u.latencyMs === null || u.latencyMs === undefined ? "–" : u.latencyMs + " ms") + "</td>" +
         "<td>" + (u.requests
           ? u.requests.ok.toLocaleString() + (u.requests.error ? ' <span class="bad">(' + u.requests.error + ' err)</span>' : "")

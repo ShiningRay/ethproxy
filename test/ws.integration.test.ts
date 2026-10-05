@@ -65,6 +65,7 @@ function baseConfig(upstream: {
     syncing: { mirror: false },
     reorg: { enabled: true, windowSize: 128 },
     cors: { enabled: true, origin: "*" },
+    upstreamCooldown: { defaultMs: 15000, maxMs: 300000 },
   };
 }
 

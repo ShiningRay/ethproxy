@@ -17,6 +17,7 @@ async function main(): Promise<void> {
     config.txpool,
     config.syncing,
     config.reorg,
+    config.upstreamCooldown,
   );
   pool.start();
 

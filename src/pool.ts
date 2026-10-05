@@ -1,8 +1,9 @@
-import type { HealthConfig, ReorgConfig, SyncingConfig, TxpoolConfig, UpstreamConfig } from "./config.js";
+import type { HealthConfig, ReorgConfig, SyncingConfig, TxpoolConfig, UpstreamConfig, UpstreamCooldownConfig } from "./config.js";
 import { reorgDepth, reorgsDetected } from "./metrics.js";
 import { parseQuantity, type JsonRpcResponse } from "./rpc.js";
 import { ReorgDetector, type ReorgEvent } from "./reorg.js";
 import {
+  DEFAULT_UPSTREAM_COOLDOWN,
   Upstream,
   upstreamWsUrl,
   type UpstreamStatus,
@@ -203,9 +204,16 @@ export class UpstreamPool {
     private readonly txpool: TxpoolConfig = { mirror: false },
     private readonly syncing: SyncingConfig = { mirror: false },
     reorg: ReorgConfig = { enabled: true, windowSize: 128 },
+    private readonly upstreamCooldown: UpstreamCooldownConfig = DEFAULT_UPSTREAM_COOLDOWN,
   ) {
     this.upstreams = upstreamConfigs.map(
-      (c) => new Upstream(c, health.requestTimeoutMs),
+      (c) =>
+        new Upstream(
+          c,
+          health.requestTimeoutMs,
+          this.upstreamCooldown,
+          this.logger,
+        ),
     );
     this.reorgDetector =
       reorg.enabled && health.wsHeads
@@ -381,6 +389,13 @@ export class UpstreamPool {
 
   /** Poll one upstream: eth_syncing + eth_blockNumber + eth_chainId in one batch. */
   async poll(u: Upstream): Promise<void> {
+    const now = Date.now();
+    // Parked after a rate-limit response: skip without counting a failure.
+    if (u.isThrottled(now)) return;
+    // Pacing bucket exhausted: skip this round instead of queueing behind
+    // it. Forwarding requests get priority for tokens; the next poll round
+    // tries again.
+    if (!u.takeToken(now)) return;
     try {
       const startedAt = Date.now();
       const body = await u.call([
@@ -510,12 +525,14 @@ export class UpstreamPool {
     }
   }
 
-  /** Healthy, on the reference chain, not syncing, within maxBlockLag of the pool head. */
+  /** Healthy, on the reference chain, not syncing, not rate-limit-parked, within maxBlockLag of the pool head. */
   private eligible(): Upstream[] {
     const head = this.chainHead;
     const chainId = this.chainId;
+    const now = Date.now();
     return this.upstreams.filter((u) => {
       if (!u.healthy || u.syncing) return false;
+      if (u.isThrottled(now)) return false;
       if (head === null || u.blockNumber === null) return false;
       if (chainId !== null && u.chainId !== chainId) return false;
       return head - u.blockNumber <= this.health.maxBlockLag;
