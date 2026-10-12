@@ -29,13 +29,17 @@ A reverse proxy for Ethereum JSON-RPC: multi-upstream weighted load balancing wi
 
 ## Quick start
 
+ethproxy runs on [Bun](https://bun.sh) (>= 1.2), which executes the TypeScript sources directly — no build step needed:
+
 ```bash
-npm install
+bun install
 cp config.example.yaml config.yaml   # edit upstreams to match your nodes
-npm run dev -- config.yaml           # development
+bun run dev -- config.yaml           # development (watch mode)
 # or
-npm run build && npm start -- config.yaml
+bun start -- config.yaml             # production
 ```
+
+Node.js >= 20 also works: `npm install && npm run build && node dist/index.js config.yaml`.
 
 Point your clients at `http://127.0.0.1:8545`.
 
@@ -149,9 +153,11 @@ clients → Cloudflare (WAF/rate limits/TLS) → nginx (WS upgrade/limits) → e
 ## Development
 
 ```bash
-npm test          # vitest (unit + integration, mocked upstreams)
+npm test          # vitest (unit + integration, mocked upstreams) — runs on Node
 npm run typecheck # tsc --noEmit
 ```
+
+The production runtime is Bun; the vitest suite still runs on Node and is exercised in CI alongside a Bun job (typecheck + boot smoke test).
 
 ## Out of scope (for now)
 

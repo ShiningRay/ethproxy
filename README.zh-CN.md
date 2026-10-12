@@ -30,13 +30,17 @@ Ethereum JSON-RPC 反向代理：多上游负载均衡与故障转移、同步�
 
 ## 快速开始
 
+ethproxy 运行于 [Bun](https://bun.sh)（>= 1.2），Bun 直接执行 TypeScript 源码，无需构建步骤：
+
 ```bash
-npm install
+bun install
 cp config.example.yaml config.yaml   # 按实际节点修改 upstreams
-npm run dev -- config.yaml           # 开发模式
+bun run dev -- config.yaml           # 开发模式（watch）
 # 或
-npm run build && npm start -- config.yaml
+bun start -- config.yaml             # 生产
 ```
+
+Node.js >= 20 亦可运行：`npm install && npm run build && node dist/index.js config.yaml`。
 
 客户端把节点地址指向 `http://127.0.0.1:8545` 即可。
 
@@ -150,9 +154,11 @@ ethproxy 自身只承担应用层防护（方法黑名单、请求形状限制�
 ## 开发
 
 ```bash
-npm test          # vitest（单元 + 集成，mock upstream）
+npm test          # vitest（单元 + 集成，mock upstream），在 Node 下运行
 npm run typecheck # tsc --noEmit
 ```
+
+生产运行时为 Bun；vitest 测试套件仍在 Node 下运行，CI 中同时有 Bun 任务（typecheck + 启动冒烟测试）。
 
 ## 范围外（暂未实现）
 

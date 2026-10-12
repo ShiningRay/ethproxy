@@ -36,3 +36,51 @@ jobs:
 
       - name: Test
         run: npm test
+
+  bun:
+    name: Typecheck & boot smoke (Bun)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      # Boots the server against a mock upstream and waits for a routed,
+      # cacheable JSON-RPC response — the same path as production traffic.
+      - name: Boot smoke test
+        run: |
+          cat > /tmp/mock-rpc.mjs <<'MOCK'
+          import http from "node:http";
+          const server = http.createServer((req, res) => {
+            let body = "";
+            req.on("data", (c) => (body += c));
+            req.on("end", () => {
+              let parsed;
+              try { parsed = JSON.parse(body); } catch { res.writeHead(400).end(); return; }
+              const answer = (r) => ({ jsonrpc: "2.0", id: r.id, result: r.method === "eth_chainId" ? "0x1" : (r.method === "eth_syncing" ? false : "0x0") });
+              res.writeHead(200, { "content-type": "application/json" });
+              res.end(JSON.stringify(Array.isArray(parsed) ? parsed.map(answer) : answer(parsed)));
+            });
+          });
+          server.listen(18545, "127.0.0.1", () => console.log("mock up"));
+          MOCK
+          node /tmp/mock-rpc.mjs &
+          cp config.example.yaml config.yaml
+          bun src/index.ts config.yaml &
+          ok=""
+          for i in $(seq 1 30); do
+            sleep 1
+            body=$(curl -s -m 3 -X POST http://127.0.0.1:8545 -H 'content-type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' || true)
+            case "$body" in *'"result":"0x1"'*) ok="$body"; break;; esac
+          done
+          if [ -z "$ok" ]; then echo "smoke test failed"; exit 1; fi
+          echo "smoke ok: $ok"
