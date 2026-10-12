@@ -98,6 +98,8 @@ See [config.example.yaml](config.example.yaml). Key options:
 | `rateLimit.wsMessagesPerSecond` / `wsBurst` | WS message rate and burst | 20 / 40 |
 | `rateLimit.maxSubscriptionsPerIp` | Max concurrent subscriptions per IP (across connections; freed on unsubscribe/disconnect) | 20 |
 | `cors.enabled` / `cors.origin` | CORS settings; `*` allows any origin, comma-separate multiple origins | true / `*` |
+| `auth.enabled` / `auth.username` / `auth.password` | HTTP Basic Auth on every endpoint (JSON-RPC, WS upgrades, status page, `/status`, `/metrics`), compared in constant time. Browser WS clients cannot send an Authorization header and cannot connect while enabled | false |
+| `auth.realm` / `auth.exemptPaths` | Challenge realm (printable ASCII) and exact request paths that skip auth (e.g. orchestrator health probes; query strings are stripped before matching) | `ethproxy` / `["/healthz"]` |
 
 ## Caching details
 

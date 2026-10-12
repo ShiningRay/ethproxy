@@ -1,6 +1,7 @@
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
+import { basicAuthHook } from "./auth.js";
 import type { Config } from "./config.js";
 import { renderIndexPage } from "./index-page.js";
 import { bindMetrics, metricsContentType, renderMetrics, upstreamRequestCounts } from "./metrics.js";
@@ -51,6 +52,15 @@ export async function buildServer(
     await app.register(cors, {
       origin: origin === "*" ? "*" : origin.split(",").map((o) => o.trim()),
     });
+  }
+
+  if (config.auth.enabled) {
+    if (!config.auth.username || !config.auth.password) {
+      // loadConfig rejects this combination; Config objects built directly
+      // (tests) bypass the schema, so fail fast instead of leaving auth off.
+      throw new Error("auth.enabled requires auth.username and auth.password");
+    }
+    app.addHook("onRequest", basicAuthHook(config.auth));
   }
 
   app.post("/", async (request, reply) => {

@@ -99,6 +99,8 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `rateLimit.wsMessagesPerSecond` / `wsBurst` | WS 消息限速速率与突发容量 | 20 / 40 |
 | `rateLimit.maxSubscriptionsPerIp` | 同一 IP 并发订阅数上限（跨连接合计，退订/断连释放） | 20 |
 | `cors.enabled` / `cors.origin` | 跨域配置；`*` 允许任意域，多个域逗号分隔 | true / `*` |
+| `auth.enabled` / `auth.username` / `auth.password` | 所有端点的 HTTP Basic 认证（JSON-RPC、WS 升级、状态页、`/status`、`/metrics`），常量时间比较凭据。浏览器 WS 客户端无法携带 Authorization 头，开启后无法连接 | false |
+| `auth.realm` / `auth.exemptPaths` | 质询 realm（仅限可打印 ASCII）与免认证的精确路径（如编排器探活；匹配前去掉查询串） | `ethproxy` / `["/healthz"]` |
 
 ## 缓存策略细节
 

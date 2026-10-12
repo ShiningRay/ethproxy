@@ -41,3 +41,31 @@ describe("config cross-field validation", () => {
     expect(() => loadConfig(path)).not.toThrow();
   });
 });
+
+describe("auth config", () => {
+  it("defaults to disabled with /healthz exempt", () => {
+    const path = writeConfig(BASE);
+    const config = loadConfig(path);
+    expect(config.auth.enabled).toBe(false);
+    expect(config.auth.realm).toBe("ethproxy");
+    expect(config.auth.exemptPaths).toEqual(["/healthz"]);
+  });
+
+  it("rejects enabled without username/password", () => {
+    const path = writeConfig(`${BASE}auth:\n  enabled: true\n  username: user\n`);
+    expect(() => loadConfig(path)).toThrow(/auth\.username/);
+  });
+
+  it("accepts enabled with credentials", () => {
+    const path = writeConfig(
+      `${BASE}auth:\n  enabled: true\n  username: user\n  password: pass\n`,
+    );
+    const config = loadConfig(path);
+    expect(config.auth.enabled).toBe(true);
+  });
+
+  it("rejects a non-ASCII realm", () => {
+    const path = writeConfig(`${BASE}auth:\n  enabled: true\n  username: u\n  password: p\n  realm: "以大坊"\n`);
+    expect(() => loadConfig(path)).toThrow(/printable ASCII/);
+  });
+});
