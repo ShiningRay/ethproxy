@@ -16,7 +16,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        # 22.19 is the undici 8 floor; 24 is the active LTS.
+        node: [22, 24]
     steps:
       - uses: actions/checkout@v7
 

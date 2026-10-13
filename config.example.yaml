@@ -93,6 +93,15 @@ cors:
   enabled: true             # 跨域支持（浏览器 DApp 需要）
   origin: "*"               # "*" 允许任意域；多个域用逗号分隔，如 "https://a.com, https://b.com"
 
+auth:
+  enabled: false            # HTTP Basic 认证总开关：覆盖 JSON-RPC、WS 升级、状态页、/status 与 /metrics。
+                            # 浏览器无法在 WebSocket 握手携带 Authorization 头，开启后浏览器 WS 客户端将无法连接
+  username: ""              # 启用时必填
+  password: ""              # 启用时必填
+  realm: "ethproxy"         # WWW-Authenticate 质询中的 realm（仅限可打印 ASCII）
+  exemptPaths:              # 免认证的精确路径（供编排器/监控探活；匹配前先去掉查询串）
+    - /healthz
+
 cache:
   enabled: true             # 总开关：false 时所有请求绕过缓存（也不会连接 Redis）
   backend: memory           # memory | filesystem | redis
