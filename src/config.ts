@@ -251,6 +251,17 @@ const upstreamCooldownSchema = z.object({
   maxMs: z.number().int().positive().default(300000),
 });
 
+/**
+ * Credentials in the shipped example config are empty strings while auth is
+ * disabled; an empty string means "unset" so such configs still load.
+ * Enabling auth without real credentials is rejected in the cross-field
+ * check below.
+ */
+const optionalCredential = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(1).optional(),
+);
+
 const authSchema = z.object({
   /**
    * HTTP Basic Auth for every endpoint (JSON-RPC, WebSocket upgrades, the
@@ -258,8 +269,8 @@ const authSchema = z.object({
    * send an Authorization header, so they cannot connect while this is on.
    */
   enabled: z.boolean().default(false),
-  username: z.string().min(1).optional(),
-  password: z.string().min(1).optional(),
+  username: optionalCredential,
+  password: optionalCredential,
   /** Realm reported in the WWW-Authenticate challenge; printable ASCII. */
   realm: z.string().regex(/^[\x20-\x7e]*$/, "must be printable ASCII").default("ethproxy"),
   /** Exact request paths that skip Basic Auth (query strings are stripped before matching). */

@@ -1,6 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 
@@ -49,6 +50,25 @@ describe("auth config", () => {
     expect(config.auth.enabled).toBe(false);
     expect(config.auth.realm).toBe("ethproxy");
     expect(config.auth.exemptPaths).toEqual(["/healthz"]);
+  });
+
+  it("treats empty credentials as unset so the example config loads", () => {
+    const path = writeConfig(`${BASE}auth:\n  enabled: false\n  username: ""\n  password: ""\n`);
+    const config = loadConfig(path);
+    expect(config.auth.enabled).toBe(false);
+    expect(config.auth.username).toBeUndefined();
+    expect(config.auth.password).toBeUndefined();
+  });
+
+  it("still rejects enabled auth with empty credentials", () => {
+    const path = writeConfig(`${BASE}auth:\n  enabled: true\n  username: ""\n  password: ""\n`);
+    expect(() => loadConfig(path)).toThrow(/auth\.username/);
+  });
+
+  it("loads the shipped example config", () => {
+    const example = fileURLToPath(new URL("../config.example.yaml", import.meta.url));
+    const config = loadConfig(example);
+    expect(config.auth.enabled).toBe(false);
   });
 
   it("rejects enabled without username/password", () => {
