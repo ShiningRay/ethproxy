@@ -39,7 +39,7 @@ bun run dev -- config.yaml           # development (watch mode)
 bun start -- config.yaml             # production
 ```
 
-Node.js >= 20 also works: `npm install && npm run build && node dist/index.js config.yaml`.
+Node.js >= 22.19 also works: `npm install && npm run build && node dist/index.js config.yaml`.
 
 Point your clients at `http://127.0.0.1:8545`.
 

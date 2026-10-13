@@ -40,7 +40,7 @@ bun run dev -- config.yaml           # 开发模式（watch）
 bun start -- config.yaml             # 生产
 ```
 
-Node.js >= 20 亦可运行：`npm install && npm run build && node dist/index.js config.yaml`。
+Node.js >= 22.19 亦可运行：`npm install && npm run build && node dist/index.js config.yaml`。
 
 客户端把节点地址指向 `http://127.0.0.1:8545` 即可。
 
