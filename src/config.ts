@@ -251,6 +251,34 @@ const upstreamCooldownSchema = z.object({
   maxMs: z.number().int().positive().default(300000),
 });
 
+/**
+ * Credentials in the shipped example config are empty strings while auth is
+ * disabled; an empty string means "unset" so such configs still load.
+ * Enabling auth without real credentials is rejected in the cross-field
+ * check below.
+ */
+const optionalCredential = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(1).optional(),
+);
+
+const authSchema = z.object({
+  /**
+   * HTTP Basic Auth for every endpoint (JSON-RPC, WebSocket upgrades, the
+   * status page, /status and /metrics). Browser WebSocket clients cannot
+   * send an Authorization header, so they cannot connect while this is on.
+   */
+  enabled: z.boolean().default(false),
+  username: optionalCredential,
+  password: optionalCredential,
+  /** Realm reported in the WWW-Authenticate challenge; printable ASCII. */
+  realm: z.string().regex(/^[\x20-\x7e]*$/, "must be printable ASCII").default("ethproxy"),
+  /** Exact request paths that skip Basic Auth (query strings are stripped before matching). */
+  exemptPaths: z
+    .array(z.string().regex(/^\/[a-zA-Z0-9/_-]*$/, "must be an absolute URL path"))
+    .default(["/healthz"]),
+});
+
 const configSchema = z.object({
   listen: z
     .object({
@@ -289,6 +317,7 @@ const configSchema = z.object({
   reorg: reorgSchema.prefault({}),
   cors: corsSchema.prefault({}),
   upstreamCooldown: upstreamCooldownSchema.prefault({}),
+  auth: authSchema.prefault({}),
 }).superRefine((cfg, ctx) => {
   // Read-time reorg validation is only sound when every unfinalized cached
   // height is covered by the detector's header window.
@@ -297,6 +326,13 @@ const configSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["reorg", "windowSize"],
       message: `must be >= cache.finalityDepth (${cfg.cache.finalityDepth}) when reorg detection is enabled`,
+    });
+  }
+  if (cfg.auth.enabled && (!cfg.auth.username || !cfg.auth.password)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["auth", "username"],
+      message: "auth.username and auth.password are required when auth.enabled is true",
     });
   }
 });
@@ -315,6 +351,7 @@ export type TxpoolConfig = z.infer<typeof txpoolSchema>;
 export type SyncingConfig = z.infer<typeof syncingSchema>;
 export type ReorgConfig = z.infer<typeof reorgSchema>;
 export type CorsConfig = z.infer<typeof corsSchema>;
+export type AuthConfig = z.infer<typeof authSchema>;
 
 export function loadConfig(path: string): Config {
   const raw = readFileSync(path, "utf8");

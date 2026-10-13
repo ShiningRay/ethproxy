@@ -127,6 +127,7 @@ async function makeProxy(nodes: MockNode[], stickyTtlMs = 300000) {
     reorg: { enabled: true, windowSize: 128 },
     cors: { enabled: true, origin: "*" },
     upstreamCooldown: { defaultMs: 15000, maxMs: 300000 },
+    auth: { enabled: false, realm: "ethproxy", exemptPaths: ["/healthz"] },
   };
   const pool = new UpstreamPool(config.upstreams, config.health);
   await pool.pollAll();
