@@ -26,10 +26,10 @@
     "undici": "^8.11.2",
     "ws": "^8.22.0",
     "yaml": "^2.9.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "@types/ws": "^8.18.2",
     "ioredis-mock": "^8.9.0",
     "typescript": "^7.0.2",
