@@ -1,5 +1,28 @@
 version: 2
 updates:
+  # 本仓同时维护两套锁文件，两个生态都必须登记，缺一就会出现「package.json 升了、
+  # 锁文件没跟上」的 --frozen-lockfile 失败：
+  #   - bun.lock          → 生产运行时（Dockerfile: bun install --frozen-lockfile --production）
+  #                         与 CI 的 "Typecheck & boot smoke (Bun)" job
+  #   - package-lock.json → CI 的 "Typecheck, build & test (Node 22/24)" job（npm ci）
+  # 2026-10-22 之前只登记了 npm，dependabot 每次升级只改 package-lock.json，
+  # bun.lock 停在旧版本，Docker 与 Bun job 双双红灯（run 39706513423）。
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # ioredis 6 暂缓：ioredis-mock（及其 @types）的 peerDependencies 仍锁 ioredis ^5，
+      # 升上去 npm ci 会 ERESOLVE。
+      - dependency-name: ioredis
+        update-types:
+          - version-update:semver-major
+
   - package-ecosystem: npm
     directory: /
     schedule:
@@ -10,8 +33,7 @@ updates:
           - minor
           - patch
     ignore:
-      # ioredis 6 is blocked until ioredis-mock (and its @types) support it;
-      # their peerDependencies still pin ioredis ^5, so npm ci ERESOLVEs.
+      # 与 bun 生态同步忽略，否则两边升级进度会分叉。
       - dependency-name: ioredis
         update-types:
           - version-update:semver-major
