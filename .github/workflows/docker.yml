@@ -16,28 +16,33 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # PR 只验证 amd64；main / tag 才构建双架构。
+  # 注意：job 级 if 不能引用 matrix，所以先算出一份矩阵再 fromJSON。
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.set.outputs.include }}
+    steps:
+      - id: set
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo 'include=[{"platform":"linux/amd64","runner":"ubuntu-latest","id":"amd64"}]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'include=[{"platform":"linux/amd64","runner":"ubuntu-latest","id":"amd64"},{"platform":"linux/arm64","runner":"ubuntu-24.04-arm","id":"arm64"}]' >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build ${{ matrix.platform }}
+    needs: matrix
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
-    # PR 只构建 amd64 做快速验证；arm64 与多架构清单只在 main / tag 上产出，
-    # 这样每个 PR push 少跑一台 arm runner。
-    if: matrix.id != 'arm64' || github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Native runners for both arches: QEMU-emulated arm64 builds have
-          # hung for hours in practice, and arm64 runners are free on repos.
-          - platform: linux/amd64
-            runner: ubuntu-latest
-            id: amd64
-          - platform: linux/arm64
-            runner: ubuntu-24.04-arm
-            id: arm64
+        include: ${{ fromJSON(needs.matrix.outputs.include) }}
     steps:
       - uses: actions/checkout@v7
 
