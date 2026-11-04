@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   pull_request:
 
+# PR 上连续 push 会重跑多架构构建；只保留最后一次。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -15,6 +20,9 @@ jobs:
     name: Build ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    # PR 只构建 amd64 做快速验证；arm64 与多架构清单只在 main / tag 上产出，
+    # 这样每个 PR push 少跑一台 arm runner。
+    if: matrix.id != 'arm64' || github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
