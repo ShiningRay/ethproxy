@@ -103,6 +103,7 @@ async function makeProxy(
   const config: Config = {
     listen: { host: "127.0.0.1", port: 0 },
     statusPagePath: "/",
+    hideUpstreamUrls: false,
     upstreams: nodes.map((n, i) => ({
       name: `node-${i}`,
       url: n.url,
@@ -594,10 +595,14 @@ describe("server endpoints", () => {
     const status = await app.inject({ method: "GET", url: "/status" });
     const body = status.json() as {
       chainHead: number;
-      upstreams: { name: string; healthy: boolean }[];
+      upstreams: { name: string; healthy: boolean; url: string }[];
     };
     expect(body.chainHead).toBe(1000);
-    expect(body.upstreams[0]).toMatchObject({ name: "node-0", healthy: true });
+    expect(body.upstreams[0]).toMatchObject({
+      name: "node-0",
+      healthy: true,
+      url: node.url,
+    });
 
     node.setFail(true);
     await pool.pollAll();
@@ -725,6 +730,27 @@ describe("server endpoints", () => {
     // JSON status endpoint is unaffected
     const status = await app.inject({ method: "GET", url: "/status" });
     expect(status.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it("hides upstream URLs on the status page and /status when configured", async () => {
+    const node = await startMockNode(1000);
+    const { config, pool, proxy } = await makeProxy([node]);
+    config.hideUpstreamUrls = true;
+    const app = await buildServer(proxy, pool, config);
+
+    const status = await app.inject({ method: "GET", url: "/status" });
+    const body = status.json() as {
+      upstreams: { name: string; healthy: boolean; url?: string }[];
+    };
+    expect(body.upstreams[0]).toMatchObject({ name: "node-0", healthy: true });
+    expect(body.upstreams[0]).not.toHaveProperty("url");
+
+    // The page shell still renders; its rows come from the redacted /status.
+    const page = await app.inject({ method: "GET", url: "/" });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers["content-type"]).toContain("text/html");
 
     await app.close();
   });

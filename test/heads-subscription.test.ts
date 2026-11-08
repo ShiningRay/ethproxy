@@ -312,6 +312,7 @@ function makeConfig(upstream: { name: string; url: string; wsUrl?: string }): Co
   return {
     listen: { host: "127.0.0.1", port: 0 },
     statusPagePath: "/",
+    hideUpstreamUrls: false,
     upstreams: [{ ...upstream, weight: 1 }],
     health: { ...health },
     cache: {

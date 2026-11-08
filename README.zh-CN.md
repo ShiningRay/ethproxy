@@ -66,6 +66,7 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `upstreams[].methods.allow` / `.deny` | 方法级路由：声明该上游可/不可承载哪些 RPC 方法，选路时自动回避并改由其他节点承载，不因该节点的已知限制而失败（如 publicnode 免费档对 `eth_getTransactionReceipt` 一律 403）。条目为方法全名或命名空间通配（`debug_*`）；批量按方法并集过滤；`deny` 优先于 `allow` | —（不限制） |
 | `upstreamCooldown.defaultMs` / `maxMs` | 上游返回限流响应后的冷却时长：冷却期内选路跳过、健康轮询暂停；`maxMs` 为冷却上限（含 `Retry-After` 推算值） | 15000 / 300000 |
 | `statusPagePath` | 状态展示页路径；`false` 完全禁用页面（`/status` JSON 接口不受影响） | `/` |
+| `hideUpstreamUrls` | 状态页与 `/status` JSON 都不返回上游 URL；上游地址内嵌 API key 或内网主机名时适用。选路、健康检查与 `/metrics` 不受影响 | false |
 | `chainId` | 期望的链 ID（如 1 = 主网）；不配则取多数节点为准 | 自动检测 |
 | `health.pollIntervalMs` | 健康轮询间隔 | 5000 |
 | `health.maxBlockLag` | 落后池内最大高度多少块算掉队 | 5 |

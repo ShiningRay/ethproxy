@@ -113,6 +113,7 @@ function makeConfig(upstreams: UpstreamConfig[]): Config {
   return {
     listen: { host: "127.0.0.1", port: 8545 },
     statusPagePath: "/",
+    hideUpstreamUrls: false,
     upstreams,
     health: {
       pollIntervalMs: 60000,

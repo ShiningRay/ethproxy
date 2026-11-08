@@ -6,6 +6,10 @@ listen:
 # 改为如 "/dash" 可将页面移出根路径，设为 false 则完全禁用页面（/status JSON 接口不受影响）
 # statusPagePath: "/"
 
+# 隐藏上游 URL：状态页与 /status JSON 都不再返回 url。上游地址可能内嵌 API key
+# 或内网主机名，公网部署时可开启；选路、健康检查与 /metrics 不受影响。
+# hideUpstreamUrls: false
+
 upstreams:
   - name: node-a
     url: http://127.0.0.1:18545

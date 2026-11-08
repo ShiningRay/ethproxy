@@ -43,6 +43,18 @@ describe("config cross-field validation", () => {
   });
 });
 
+describe("status output config", () => {
+  it("exposes upstream URLs by default", () => {
+    const config = loadConfig(writeConfig(BASE));
+    expect(config.hideUpstreamUrls).toBe(false);
+  });
+
+  it("parses hideUpstreamUrls", () => {
+    const config = loadConfig(writeConfig(`${BASE}hideUpstreamUrls: true\n`));
+    expect(config.hideUpstreamUrls).toBe(true);
+  });
+});
+
 describe("auth config", () => {
   it("defaults to disabled with /healthz exempt", () => {
     const path = writeConfig(BASE);

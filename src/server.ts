@@ -128,10 +128,13 @@ export async function buildServer(
     const counts = await upstreamRequestCounts();
     return {
       ...status,
-      upstreams: status.upstreams.map((u) => ({
-        ...u,
-        requests: counts.get(u.name) ?? { ok: 0, error: 0 },
-      })),
+      upstreams: status.upstreams.map((u) => {
+        const { url, ...rest } = u;
+        return {
+          ...(config.hideUpstreamUrls ? rest : { url, ...rest }),
+          requests: counts.get(u.name) ?? { ok: 0, error: 0 },
+        };
+      }),
       cache: proxy.cacheStats(),
       local: proxy.localStats(),
       writes: proxy.writeStats(),

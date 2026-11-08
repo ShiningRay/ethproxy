@@ -1,0 +1,136 @@
+listen:
+  host: 0.0.0.0
+  port: 8545
+
+# 状态展示页路径：默认 "/"（与 WebSocket 端点同路径）；
+# 改为如 "/dash" 可将页面移出根路径，设为 false 则完全禁用页面（/status JSON 接口不受影响）
+# statusPagePath: "/"
+
+upstreams:
+  - name: node-a
+    url: http://127.0.0.1:18545
+    # WebSocket 端点；不配则按 url 推导（http→ws, https→wss）
+    # wsUrl: ws://127.0.0.1:18546
+    weight: 2
+    # 客户端侧限速：限制代理发往该上游的请求速率（令牌桶，按 HTTP 请求计，
+    # 一个批量算一次）。桶里没有令牌时优先选择其他上游，全都没有才等待，
+    # 用于遵守上游服务商自己的配额、避免触发 429。不配则不限速。
+    # rateLimit:
+    #   requestsPerSecond: 10
+    #   burst: 20              # 突发容量，缺省 ceil(requestsPerSecond)
+    # 该上游返回限流响应后的冷却时长（毫秒），覆盖全局 upstreamCooldown.defaultMs
+    # cooldownMs: 30000
+    # 附加到该上游每个请求的 HTTP 头：JSON-RPC POST（含健康轮询）与 WebSocket 握手均带上。
+    # 用于需 API key 或自定义头的节点；值可能含密钥，配置文件勿入版本库。
+    # headers:
+    #   Authorization: Bearer <api-key>
+    #   x-api-key: <api-key>
+    # 方法级路由黑白名单：声明该上游可/不可承载哪些 RPC 方法，选路时自动回避，
+    # 请求因此改由其他节点承载，不会因该节点的已知限制而失败（如 publicnode 免费档
+    # 对 eth_getTransactionReceipt 一律 403）。条目为方法全名或命名空间通配（"debug_*"）。
+    # deny 优先于 allow；两者都不配即不限制。
+    # methods:
+    #   deny: [eth_getTransactionReceipt, debug_*]
+    #   allow: [eth_*, net_*]
+  - name: node-b
+    url: http://127.0.0.1:28545
+    weight: 1
+
+# 期望的链 ID（如 1 = 以太坊主网）。配置后，报告其他 chainId 的节点会被摘除；
+# 不配置则自动采用多数节点的 chainId 作为基准。
+# chainId: 1
+
+health:
+  pollIntervalMs: 5000      # 健康轮询间隔
+  requestTimeoutMs: 10000   # 上游请求超时
+  maxBlockLag: 5            # 落后池内最大高度超过此值则摘除
+  failureThreshold: 3       # 连续失败次数达到此值则摘除
+  maxRetries: 2             # 单请求最多尝试的上游数
+  retryBaseDelayMs: 100     # 重试退避基数：第 n 次重试延迟 base * 2^(n-1)
+  retryMaxDelayMs: 1000     # 重试退避上限
+  wsHeads: true             # 通过持久的 eth_subscribe("newHeads") WS 连接跟踪链高（WS 断开时自动回退 HTTP 轮询）；
+                            # false 时块高仅来自 HTTP 轮询，WS 可用性改为每轮探测
+  wsPingIntervalMs: 30000   # 上游 WS 连接的客户端保活：每隔该毫秒数发 ping，连续两个间隔收不到 pong 则判定死链
+                            # 主动断开重连。防止服务商网关空闲断连（close 1006）；0 关闭
+
+security:
+  # 直接拒绝的 RPC 命名空间（公网入口加固）
+  blockedNamespaces: [admin, personal, debug, trace, miner, txpool]
+  maxBatchSize: 100         # 单个批量请求最大元素数
+  maxBodyBytes: 1048576     # 请求体大小上限（1MB）
+  maxLogsRange: 10000       # eth_getLogs 最大区块跨度
+
+rateLimit:
+  enabled: true             # 按客户端 IP 的令牌桶限速（依赖 X-Forwarded-For，需部署在反向代理之后）
+  requestsPerSecond: 50     # HTTP JSON-RPC 每秒每 IP（批量按元素数计费）
+  burst: 100                # 突发容量
+  wsMessagesPerSecond: 20   # WS 消息每秒每 IP
+  wsBurst: 40
+  maxSubscriptionsPerIp: 20 # 同一 IP 的并发 eth_subscribe 订阅数上限（跨连接合计）
+
+filters:
+  stickyTtlMs: 300000       # 代理侧 filter ID 映射的空闲 TTL（粘滞路由）；每次轮询刷新，对齐 geth 默认 5 分钟的 filter 过期
+
+txpool:
+  mirror: false             # 通过上游 WS newPendingTransactions 订阅维护本地 pending 交易镜像，
+                            # 并本地应答客户端的 eth_subscribe("newPendingTransactions")；
+                            # 与 wsHeads 共用每上游一条的持久 WS 连接。默认关闭（高频事件流）
+
+syncing:
+  mirror: false             # 本地应答客户端的 eth_subscribe("syncing")：只要任一上游处于同步中就返回
+                            # syncing（带进度对象），全部同步完才回 false（订阅后立即回当前状态，
+                            # 之后只在聚合状态变化时推送）。状态来自上游 WS syncing 订阅，
+                            # HTTP 健康轮询作回退；与 wsHeads 共用每上游一条的持久 WS 连接。默认关闭
+
+reorg:
+  enabled: true             # 基于上游 newHeads 的 parentHash 连续性检测链上重组；确认的重组会记录日志、
+                            # 计入指标（ethproxy_reorgs_detected_total / ethproxy_reorg_depth）并经 pool.onReorg 广播。
+                            # 需要 wsHeads 开启（HTTP 轮询拿不到块哈希）。单点上游的短暂分歧会被仲裁过滤，
+                            # 只有冲突分支被后续块接续或被第二个上游证实才判定为重组
+  windowSize: 128           # 用于定位分叉点的近期区块头滑动窗口大小（过浅的窗口会让重组深度只报下界）
+
+cors:
+  enabled: true             # 跨域支持（浏览器 DApp 需要）
+  origin: "*"               # "*" 允许任意域；多个域用逗号分隔，如 "https://a.com, https://b.com"
+
+auth:
+  enabled: false            # HTTP Basic 认证总开关：覆盖 JSON-RPC、WS 升级、状态页、/status 与 /metrics。
+                            # 浏览器无法在 WebSocket 握手携带 Authorization 头，开启后浏览器 WS 客户端将无法连接
+  username: ""              # 启用时必填
+  password: ""              # 启用时必填
+  realm: "ethproxy"         # WWW-Authenticate 质询中的 realm（仅限可打印 ASCII）
+  exemptPaths:              # 免认证的精确路径（供编排器/监控探活；匹配前先去掉查询串）
+    - /healthz
+
+cache:
+  enabled: true             # 总开关：false 时所有请求绕过缓存（也不会连接 Redis）
+  backend: memory           # memory | filesystem | redis
+  shortTtlMs: 2000          # 链头相关数据的短 TTL（dynamicTtl 开启时作为上限与初始回退值）
+  pendingTtlMs: 1000        # 未打包交易收据等的极短 TTL
+  unfinalizedTtlMs: 900000  # 7 个重组校验方法（按块高取块/数量/叔块 + 按哈希取交易/收据）未定型条目的兜底 TTL；
+                            # 正确性由读取时对照重组检测器窗口校验保证，此 TTL 只约束窗口无法担保的条目寿命
+  dynamicTtl: true          # 按观测到的出块间隔动态调整短 TTL（间隔/4，钳制在 [minTtlMs, shortTtlMs]）
+  minTtlMs: 200             # 动态 TTL 下限
+  finalityDepth: 64         # 区块号 ≤ 链头 - finalityDepth 视为不可变，永久缓存
+
+  memory:
+    maxEntries: 100000
+
+  # backend: redis 时启用：
+  # redis:
+  #   url: redis://127.0.0.1:6379
+  #   keyPrefix: "ethproxy:"
+
+  # backend: filesystem 时启用：条目以 JSON 文件落盘（键 sha256 散列为文件名，
+  # 散列到 256 个子目录），进程内存占用与缓存条目数无关。
+  # filesystem:
+  #   dir: ./cache              # 缓存目录，按需创建；Docker 部署建议挂卷
+  #   sweepIntervalMs: 60000    # 后台清扫周期（删过期/损坏文件、执行 maxBytes）；0 关闭
+  #   maxBytes: 1073741824      # 磁盘软上限（默认 1GiB），超限从最旧文件开始驱逐
+
+# 上游限流冷却（被动）：上游以 HTTP 429（按 Retry-After 头）或限流类
+# JSON-RPC error 拒绝请求时，代理将该上游停用一段时间——冷却期内选路
+# 跳过它、健康轮询也暂停，到期自动恢复。
+# upstreamCooldown:
+#   defaultMs: 15000          # 响应未带 Retry-After 时的缺省冷却（毫秒）
+#   maxMs: 300000             # 冷却上限（毫秒），含 Retry-After 推算值

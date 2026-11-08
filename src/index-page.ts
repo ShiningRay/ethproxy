@@ -121,7 +121,8 @@ async function refresh() {
       const throttled = u.throttled
         ? '<td class="bad">● ' + Math.max(0, Math.ceil((u.throttledUntil - Date.now()) / 1000)) + "s</td>"
         : '<td class="muted">–</td>';
-      return "<tr><td>" + u.name + ' <span class="muted">' + u.url + "</span></td>" +
+      const url = u.url ? ' <span class="muted">' + u.url + "</span>" : "";
+      return "<tr><td>" + u.name + url + "</td>" +
         '<td class="' + (ok ? "ok" : "bad") + '">' + (ok ? "● healthy" : "● down") + "</td>" +
         "<td>" + (u.blockNumber === null ? "–" : u.blockNumber.toLocaleString()) + "</td>" +
         "<td>" + (u.chainId ?? "–") + "</td>" +

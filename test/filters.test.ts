@@ -79,6 +79,7 @@ async function makeProxy(nodes: MockNode[], stickyTtlMs = 300000) {
   const config: Config = {
     listen: { host: "127.0.0.1", port: 0 },
     statusPagePath: "/",
+    hideUpstreamUrls: false,
     upstreams: nodes.map((n, i) => ({
       name: `node-${i}`,
       url: n.url,

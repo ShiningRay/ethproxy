@@ -17,6 +17,7 @@ function baseConfig(tweak?: (config: Config) => void): Config {
   const config: Config = {
     listen: { host: "127.0.0.1", port: 0 },
     statusPagePath: "/",
+    hideUpstreamUrls: false,
     upstreams: [{ name: "a", url: "http://127.0.0.1:1", weight: 1 }],
     health: {
       pollIntervalMs: 60000,

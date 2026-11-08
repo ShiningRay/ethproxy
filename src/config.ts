@@ -300,6 +300,12 @@ const configSchema = z.object({
     ])
     .default("/"),
   /**
+   * Omit upstream URLs from the HTML status page and the JSON /status
+   * response. Use when endpoint URLs embed API keys or private hostnames.
+   * Routing, health checks and metrics are unaffected.
+   */
+  hideUpstreamUrls: z.boolean().default(false),
+  /**
    * Expected chain id (e.g. 1 for mainnet). When set, upstreams reporting a
    * different eth_chainId are excluded. When unset, the pool adopts the
    * majority chain id among responsive upstreams.

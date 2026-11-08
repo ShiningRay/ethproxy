@@ -65,6 +65,7 @@ See [config.example.yaml](config.example.yaml). Key options:
 | `upstreams[].methods.allow` / `.deny` | Method-level routing: the upstream is not selected for a request whose method it may not serve, so a known provider restriction reroutes instead of failing (publicnode's free tier 403s `eth_getTransactionReceipt`). Entries are exact names or namespace globs (`debug_*`); a batch is filtered by the union of its methods; `deny` wins over `allow` | — (unrestricted) |
 | `upstreamCooldown.defaultMs` / `maxMs` | Cooldown after a rate-limit response (HTTP 429 or rate-limit RPC error): routing and health polls skip the upstream until it expires; `maxMs` caps `Retry-After`-derived values | 15000 / 300000 |
 | `statusPagePath` | Path of the HTML status page; `false` disables the page entirely (`/status` JSON is unaffected) | `/` |
+| `hideUpstreamUrls` | Omit upstream URLs from the HTML status page and `/status` JSON; use when URLs embed API keys or private hostnames. Routing, health checks and `/metrics` are unaffected | false |
 | `chainId` | Expected chain id (e.g. 1 = mainnet); majority wins when unset | auto-detect |
 | `health.pollIntervalMs` | Health poll interval | 5000 |
 | `health.maxBlockLag` | Blocks behind the pool head before a node is removed | 5 |
