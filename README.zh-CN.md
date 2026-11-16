@@ -100,8 +100,9 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 | `rateLimit.wsMessagesPerSecond` / `wsBurst` | WS 消息限速速率与突发容量 | 20 / 40 |
 | `rateLimit.maxSubscriptionsPerIp` | 同一 IP 并发订阅数上限（跨连接合计，退订/断连释放） | 20 |
 | `cors.enabled` / `cors.origin` | 跨域配置；`*` 允许任意域，多个域逗号分隔 | true / `*` |
-| `auth.enabled` / `auth.username` / `auth.password` | 所有端点的 HTTP Basic 认证（JSON-RPC、WS 升级、状态页、`/status`、`/metrics`），常量时间比较凭据。浏览器 WS 客户端无法携带 Authorization 头，开启后无法连接 | false |
-| `auth.realm` / `auth.exemptPaths` | 质询 realm（仅限可打印 ASCII）与免认证的精确路径（如编排器探活；匹配前去掉查询串） | `ethproxy` / `["/healthz"]` |
+| `auth.enabled` / `auth.username` / `auth.password` | 所有端点的认证（JSON-RPC、WS 升级、状态页、`/status`、`/metrics`），常量时间比较。HTTP Basic 凭据与 token 为并列方式，任一通过即放行；开启时至少配置一种。浏览器 WS 客户端无法携带 Authorization 头，须用 token | false |
+| `auth.tokens` / `auth.tokenParam` | 静态 token 列表（可多个，≥16 字符），放查询串（`https://host/?token=…`、`wss://host/?token=…`，浏览器 WebSocket 客户端可用）或 `Authorization: Bearer <token>` 头；`tokenParam` 改查询参数名。查询串会进访问日志：用长随机串，泄漏即轮换 | `[]` / `token` |
+| `auth.realm` / `auth.exemptPaths` | 质询 realm（仅限可打印 ASCII；仅当配置了 Basic 凭据才发 Basic 质询）与免认证的精确路径（如编排器探活；匹配前去掉查询串） | `ethproxy` / `["/healthz"]` |
 
 ## 缓存策略细节
 
@@ -166,4 +167,3 @@ npm run typecheck # tsc --noEmit
 ## 范围外（暂未实现）
 
 - WebSocket 订阅的断线自动重订阅（上游订阅连接断开时客户端连接随之关闭，重连重订阅由客户端负责）
-- 鉴权

@@ -62,7 +62,7 @@ function baseConfig(tweak?: (config: Config) => void): Config {
     reorg: { enabled: true, windowSize: 128 },
     cors: { enabled: true, origin: "*" },
     upstreamCooldown: { defaultMs: 15000, maxMs: 300000 },
-    auth: { enabled: true, username: "user", password: "pass", realm: "ethproxy", exemptPaths: ["/healthz"] },
+    auth: { enabled: true, username: "user", password: "pass", realm: "ethproxy", exemptPaths: ["/healthz"], tokens: [], tokenParam: "token" },
   };
   tweak?.(config);
   return config;

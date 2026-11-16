@@ -264,16 +264,32 @@ const optionalCredential = z.preprocess(
 
 const authSchema = z.object({
   /**
-   * HTTP Basic Auth for every endpoint (JSON-RPC, WebSocket upgrades, the
-   * status page, /status and /metrics). Browser WebSocket clients cannot
-   * send an Authorization header, so they cannot connect while this is on.
+   * Authentication for every endpoint (JSON-RPC, WebSocket upgrades, the
+   * status page, /status and /metrics). A request passes when it satisfies
+   * either configured method: HTTP Basic credentials, or one of the static
+   * tokens. At least one method must be configured while enabled.
    */
   enabled: z.boolean().default(false),
+  /**
+   * HTTP Basic credentials. Browser WebSocket clients cannot send an
+   * Authorization header, so they must use a token instead.
+   */
   username: optionalCredential,
   password: optionalCredential,
+  /**
+   * Static tokens accepted in the query string (e.g. wss://host/?token=...)
+   * or as "Authorization: Bearer <token>". Unlike Basic Auth this works for
+   * browser WebSocket clients. Query strings end up in access logs, so use
+   * long random values and rotate on leakage.
+   */
+  tokens: z
+    .array(z.string().min(16, "auth tokens must be at least 16 characters"))
+    .default([]),
+  /** Query-string parameter name carrying the token. */
+  tokenParam: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]*$/).default("token"),
   /** Realm reported in the WWW-Authenticate challenge; printable ASCII. */
   realm: z.string().regex(/^[\x20-\x7e]*$/, "must be printable ASCII").default("ethproxy"),
-  /** Exact request paths that skip Basic Auth (query strings are stripped before matching). */
+  /** Exact request paths that skip auth (query strings are stripped before matching). */
   exemptPaths: z
     .array(z.string().regex(/^\/[a-zA-Z0-9/_-]*$/, "must be an absolute URL path"))
     .default(["/healthz"]),
@@ -334,11 +350,16 @@ const configSchema = z.object({
       message: `must be >= cache.finalityDepth (${cfg.cache.finalityDepth}) when reorg detection is enabled`,
     });
   }
-  if (cfg.auth.enabled && (!cfg.auth.username || !cfg.auth.password)) {
+  if (
+    cfg.auth.enabled &&
+    (!cfg.auth.username || !cfg.auth.password) &&
+    cfg.auth.tokens.length === 0
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ["auth", "username"],
-      message: "auth.username and auth.password are required when auth.enabled is true",
+      path: ["auth", "enabled"],
+      message:
+        "auth requires either username+password or at least one token when auth.enabled is true",
     });
   }
 });

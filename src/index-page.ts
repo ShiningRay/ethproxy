@@ -82,7 +82,9 @@ export function renderIndexPage(meta: IndexPageMeta): string {
 <script>
 async function refresh() {
   try {
-    const res = await fetch("/status");
+    // Carry the page's query string (e.g. ?token=...) onto /status so the
+    // auto-refresh keeps passing auth when tokens are enabled.
+    const res = await fetch("/status" + location.search);
     const s = await res.json();
     document.getElementById("error").style.display = "none";
     document.getElementById("chainId").textContent = s.chainId ?? "–";

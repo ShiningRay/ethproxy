@@ -6,3 +6,4 @@ config.local.yaml
 /cache/
 *.exe
 .scriptc-lab/
+/.zcode

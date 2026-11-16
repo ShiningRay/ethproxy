@@ -74,7 +74,7 @@ describe("auth config", () => {
 
   it("still rejects enabled auth with empty credentials", () => {
     const path = writeConfig(`${BASE}auth:\n  enabled: true\n  username: ""\n  password: ""\n`);
-    expect(() => loadConfig(path)).toThrow(/auth\.username/);
+    expect(() => loadConfig(path)).toThrow(/auth\.enabled/);
   });
 
   it("loads the shipped example config", () => {
@@ -85,7 +85,7 @@ describe("auth config", () => {
 
   it("rejects enabled without username/password", () => {
     const path = writeConfig(`${BASE}auth:\n  enabled: true\n  username: user\n`);
-    expect(() => loadConfig(path)).toThrow(/auth\.username/);
+    expect(() => loadConfig(path)).toThrow(/auth\.enabled/);
   });
 
   it("accepts enabled with credentials", () => {
@@ -94,6 +94,32 @@ describe("auth config", () => {
     );
     const config = loadConfig(path);
     expect(config.auth.enabled).toBe(true);
+  });
+
+  it("defaults tokens to empty and tokenParam to \"token\"", () => {
+    const config = loadConfig(writeConfig(BASE));
+    expect(config.auth.tokens).toEqual([]);
+    expect(config.auth.tokenParam).toBe("token");
+  });
+
+  it("accepts enabled with tokens and no Basic credentials", () => {
+    const path = writeConfig(
+      `${BASE}auth:\n  enabled: true\n  tokens:\n    - "8f3a7b2e5c1d9406ab3f7e2d81c5b60a"\n    - "d91c4f60b7a23e58c0fd1b24ae697d33"\n`,
+    );
+    const config = loadConfig(path);
+    expect(config.auth.username).toBeUndefined();
+    expect(config.auth.tokens).toHaveLength(2);
+  });
+
+  it("rejects tokens shorter than 16 characters", () => {
+    const path = writeConfig(`${BASE}auth:\n  tokens:\n    - "short"\n`);
+    expect(() => loadConfig(path)).toThrow(/at least 16 characters/);
+  });
+
+  it("parses a custom tokenParam", () => {
+    const path = writeConfig(`${BASE}auth:\n  tokenParam: key\n`);
+    const config = loadConfig(path);
+    expect(config.auth.tokenParam).toBe("key");
   });
 
   it("rejects a non-ASCII realm", () => {
