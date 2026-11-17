@@ -17,12 +17,25 @@ export interface PoolLogger {
   warn: (msg: string, ...args: unknown[]) => void;
 }
 
+/** Euclidean GCD of two positive integers. */
+function gcd(a: number, b: number): number {
+  while (b !== 0) [a, b] = [b, a % b];
+  return a;
+}
+
 export class UpstreamPool {
   private readonly upstreams: Upstream[];
   private readonly wsConns: Map<string, UpstreamWsConnection>;
   private timers: NodeJS.Timeout[] = [];
-  /** Flat weighted selection list; each upstream appears `weight` times. */
+  /** Flat weighted selection list; each upstream appears `selectionSlots` times. */
   private selectionCursor = 0;
+  /**
+   * Selection slots per upstream: raw hundredths from the fractional weight,
+   * reduced by their GCD. Integer weights keep the historical flat list
+   * ({2,1} stays [a,a,b], not a 300-slot list) and fractional weights yield
+   * the smallest integer ratio ({1,0.5} → {2,1}).
+   */
+  private readonly selectionSlots = new Map<Upstream, number>();
   /** Rolling window of chain-head progress samples for block-time estimation. */
   private headSamples: { elapsedMs: number; blocks: number }[] = [];
   private lastObservedHead: number | null = null;
@@ -216,6 +229,20 @@ export class UpstreamPool {
           this.logger,
         ),
     );
+    // Reduce the raw hundredths slots by their GCD (over positively weighted
+    // upstreams) so the flat selection list stays minimal.
+    let slotGcd = 0;
+    for (const u of this.upstreams) {
+      if (u.selectionSlots > 0) {
+        slotGcd = slotGcd === 0 ? u.selectionSlots : gcd(slotGcd, u.selectionSlots);
+      }
+    }
+    for (const u of this.upstreams) {
+      this.selectionSlots.set(
+        u,
+        u.selectionSlots > 0 ? u.selectionSlots / (slotGcd || 1) : 0,
+      );
+    }
     this.reorgDetector =
       reorg.enabled && health.wsHeads
         ? new ReorgDetector({ windowSize: reorg.windowSize })
@@ -598,13 +625,20 @@ export class UpstreamPool {
   }
 
   private pick(candidates: Upstream[], count: number): Upstream[] {
-    if (candidates.length === 0) return [];
-    const weighted = candidates.flatMap((u) =>
-      Array<Upstream>(u.config.weight).fill(u),
+    // Parked upstreams (weight 0, or a positive weight rounding below the
+    // 0.01 granularity) hold zero slots and are never picked, in the primary
+    // round-robin or as failover; health semantics of eligible() are
+    // unaffected — they stay polled and visible in /status.
+    const selectable = candidates.filter(
+      (u) => (this.selectionSlots.get(u) ?? 0) > 0,
+    );
+    if (selectable.length === 0) return [];
+    const weighted = selectable.flatMap((u) =>
+      Array<Upstream>(this.selectionSlots.get(u)!).fill(u),
     );
     const picks: Upstream[] = [];
     const seen = new Set<string>();
-    const limit = Math.min(count, candidates.length);
+    const limit = Math.min(count, selectable.length);
     // Primary pick: unchanged weighted round-robin over the flat list.
     const primary = weighted[this.selectionCursor % weighted.length]!;
     picks.push(primary);

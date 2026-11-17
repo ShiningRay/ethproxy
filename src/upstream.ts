@@ -198,6 +198,14 @@ export class Upstream {
   private readonly bucket: TokenBucket | null;
   /** Epoch ms until which the upstream is parked after a rate-limit response; 0 = not parked. */
   private throttledUntil = 0;
+  /**
+   * Raw selection slots at the configured two-decimal weight granularity
+   * (weight × 100). Zero (configured 0, or a positive weight below 0.005)
+   * means never selected — the upstream stays monitored but parked. The pool
+   * reduces these raw hundredths by their GCD before building the flat
+   * selection list, so integer weights keep their historical layout.
+   */
+  readonly selectionSlots: number;
 
   constructor(
     public readonly config: UpstreamConfig,
@@ -205,6 +213,7 @@ export class Upstream {
     private readonly cooldown: UpstreamCooldownConfig = DEFAULT_UPSTREAM_COOLDOWN,
     private readonly logger?: UpstreamLogger,
   ) {
+    this.selectionSlots = Math.max(0, Math.round(config.weight * 100));
     const rl = config.rateLimit;
     this.bucket =
       rl === undefined

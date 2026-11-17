@@ -196,6 +196,65 @@ describe("UpstreamPool", () => {
     expect(counts.get("b")).toBe(10);
   });
 
+  it("weights selection by fractional weights", async () => {
+    const a = await startMockNode({});
+    const b = await startMockNode({});
+    const pool = new UpstreamPool(
+      [
+        { name: "a", url: a.url, weight: 1 },
+        { name: "b", url: b.url, weight: 0.5 },
+      ],
+      health,
+    );
+    await pool.pollAll();
+    // Slots 100 vs 50 → selection cycle of 150; iterate exactly one full
+    // cycle so the split is deterministic: 100 vs 50.
+    const counts = new Map<string, number>();
+    for (let i = 0; i < 150; i++) {
+      const pick = pool.select(1)[0]!;
+      counts.set(pick.name, (counts.get(pick.name) ?? 0) + 1);
+    }
+    expect(counts.get("a")).toBe(100);
+    expect(counts.get("b")).toBe(50);
+  });
+
+  it("parks weight-0 upstreams: polled and reported but never selected", async () => {
+    const a = await startMockNode({});
+    const b = await startMockNode({});
+    const pool = new UpstreamPool(
+      [
+        { name: "a", url: a.url, weight: 1 },
+        { name: "b", url: b.url, weight: 0 },
+      ],
+      health,
+    );
+    await pool.pollAll();
+    expect(
+      pool.status().upstreams.find((u) => u.name === "b")!.healthy,
+    ).toBe(true);
+    for (let i = 0; i < 10; i++) {
+      expect(pool.select(1).map((u) => u.name)).toEqual(["a"]);
+      // The parked upstream must not appear in failover order either.
+      expect(pool.select(5).map((u) => u.name)).toEqual(["a"]);
+    }
+  });
+
+  it("treats positive weights below the 0.01 granularity as parked", async () => {
+    const a = await startMockNode({});
+    const b = await startMockNode({});
+    const pool = new UpstreamPool(
+      [
+        { name: "a", url: a.url, weight: 1 },
+        { name: "b", url: b.url, weight: 0.004 },
+      ],
+      health,
+    );
+    await pool.pollAll();
+    for (let i = 0; i < 10; i++) {
+      expect(pool.select(1).map((u) => u.name)).toEqual(["a"]);
+    }
+  });
+
   it("spreads failover picks so neighbouring upstreams are not retried back to back", async () => {
     const a = await startMockNode({});
     const b = await startMockNode({});

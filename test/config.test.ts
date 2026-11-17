@@ -43,6 +43,36 @@ describe("config cross-field validation", () => {
   });
 });
 
+describe("upstream weight", () => {
+  it("defaults to 1", () => {
+    const config = loadConfig(writeConfig(BASE));
+    expect(config.upstreams[0]!.weight).toBe(1);
+  });
+
+  it("accepts fractional and zero weights", () => {
+    const path = writeConfig(
+      `upstreams:\n  - name: a\n    url: http://127.0.0.1:8545\n    weight: 0.5\n  - name: b\n    url: http://127.0.0.1:8546\n    weight: 0\n`,
+    );
+    const config = loadConfig(path);
+    expect(config.upstreams[0]!.weight).toBe(0.5);
+    expect(config.upstreams[1]!.weight).toBe(0);
+  });
+
+  it("rejects negative weights with a downweight hint", () => {
+    const path = writeConfig(
+      `upstreams:\n  - name: a\n    url: http://127.0.0.1:8545\n    weight: -1\n`,
+    );
+    expect(() => loadConfig(path)).toThrow(/downweight/);
+  });
+
+  it("rejects weights above 100", () => {
+    const path = writeConfig(
+      `upstreams:\n  - name: a\n    url: http://127.0.0.1:8545\n    weight: 101\n`,
+    );
+    expect(() => loadConfig(path)).toThrow(/upstreams\.0\.weight/);
+  });
+});
+
 describe("status output config", () => {
   it("exposes upstream URLs by default", () => {
     const config = loadConfig(writeConfig(BASE));

@@ -29,7 +29,19 @@ const upstreamSchema = z.object({
   url: z.string().url(),
   /** WebSocket endpoint; defaults to `url` with http(s) swapped to ws(s). */
   wsUrl: z.string().url().optional(),
-  weight: z.number().int().positive().default(1),
+  /**
+   * Selection weight: 0-100 with two-decimal granularity (internally scaled
+   * to integer slots at 0.01 resolution). Long-run traffic share is
+   * weight / sum(weights) over healthy upstreams. `0` parks the upstream:
+   * health polling and the status page keep covering it, but it is never
+   * selected. Values below 0.005 round to zero slots (no traffic). Negative
+   * weights are invalid — use a 0-1 fraction to downweight.
+   */
+  weight: z
+    .number()
+    .min(0, "weight must be >= 0; use a 0-1 fraction to downweight")
+    .max(100)
+    .default(1),
   /**
    * Client-side pacing: cap the request rate sent to this upstream with a
    * token bucket. Requests prefer upstreams whose bucket has a token ready
