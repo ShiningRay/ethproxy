@@ -201,9 +201,10 @@ export class Upstream {
   /**
    * Raw selection slots at the configured two-decimal weight granularity
    * (weight × 100). Zero (configured 0, or a positive weight below 0.005)
-   * means never selected — the upstream stays monitored but parked. The pool
-   * reduces these raw hundredths by their GCD before building the flat
-   * selection list, so integer weights keep their historical layout.
+   * marks the upstream standby: normally never selected, but used when no
+   * positively weighted upstream can serve. The pool reduces these raw
+   * hundredths by their GCD before building the flat selection list, so
+   * integer weights keep their historical layout.
    */
   readonly selectionSlots: number;
 
@@ -374,13 +375,15 @@ export class Upstream {
 
     if (res.statusCode === 429) {
       const retryAfterMs = parseRetryAfter(res.headers["retry-after"]);
-      await res.body.dump();
+      // Drain the body to free the connection. body.dump() is Node-only;
+      // text() works under Bun too.
+      await res.body.text();
       this.markThrottled(this.resolveCooldownMs(retryAfterMs));
       throw new UpstreamThrottledError(this.name, retryAfterMs);
     }
 
     if (res.statusCode < 200 || res.statusCode >= 300) {
-      await res.body.dump();
+      await res.body.text();
       throw new UpstreamTransportError(
         this.name,
         `HTTP ${res.statusCode}`,
