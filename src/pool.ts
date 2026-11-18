@@ -592,6 +592,8 @@ export class UpstreamPool {
    * When methods is set, upstreams whose configured allow/deny list cannot
    * serve them are excluded; a batch passes every one of its methods, so an
    * upstream is dropped whenever it may not serve even a single item.
+   * Standby upstreams (weight 0) are picked only when no regular upstream
+   * passes these filters.
    */
   select(count = 1, minBlock?: number, methods?: readonly string[]): Upstream[] {
     return this.selectWhere(count, minBlock, methods);
@@ -603,6 +605,32 @@ export class UpstreamPool {
    */
   selectWs(count = 1, methods?: readonly string[]): Upstream[] {
     return this.selectWhere(count, undefined, methods, true);
+  }
+
+  /**
+   * Pick only from the standby (weight-0) pool, excluding names already
+   * tried. Used by forwardBatch to extend a request whose regular attempts
+   * all failed with transport errors. Applies the same eligibility, method
+   * and minBlock filters as select().
+   */
+  selectStandby(
+    count = 1,
+    minBlock?: number,
+    methods?: readonly string[],
+    exclude: ReadonlySet<string> = new Set<string>(),
+  ): Upstream[] {
+    let candidates = this.eligible().filter(
+      (u) => !exclude.has(u.name) && (this.selectionSlots.get(u) ?? 0) === 0,
+    );
+    if (methods !== undefined && methods.length > 0) {
+      candidates = candidates.filter((u) => u.canServeMethods(methods));
+    }
+    if (minBlock !== undefined) {
+      candidates = candidates.filter(
+        (u) => u.blockNumber !== null && u.blockNumber >= minBlock,
+      );
+    }
+    return this.pick(candidates, count);
   }
 
   private selectWhere(
@@ -625,16 +653,27 @@ export class UpstreamPool {
   }
 
   private pick(candidates: Upstream[], count: number): Upstream[] {
-    // Parked upstreams (weight 0, or a positive weight rounding below the
-    // 0.01 granularity) hold zero slots and are never picked, in the primary
-    // round-robin or as failover; health semantics of eligible() are
-    // unaffected — they stay polled and visible in /status.
-    const selectable = candidates.filter(
+    // Regular candidates are the positively weighted upstreams. Standby
+    // upstreams (weight 0, or a positive weight rounding below the 0.01
+    // granularity, hence zero slots) are held out while any regular
+    // candidate is selectable and become the whole pool otherwise: they are
+    // tried only when nothing regular works. Health semantics of eligible()
+    // are unaffected — standby nodes stay polled and visible in /status,
+    // and an unhealthy standby is never picked either.
+    let selectable = candidates.filter(
       (u) => (this.selectionSlots.get(u) ?? 0) > 0,
     );
+    const standby = selectable.length === 0;
+    if (standby) {
+      selectable = candidates.filter(
+        (u) => (this.selectionSlots.get(u) ?? 0) === 0,
+      );
+    }
     if (selectable.length === 0) return [];
+    // Standby upstreams are all equal (zero weight carries no ratio), so
+    // each contributes a single flat-list slot.
     const weighted = selectable.flatMap((u) =>
-      Array<Upstream>(this.selectionSlots.get(u)!).fill(u),
+      Array<Upstream>(standby ? 1 : this.selectionSlots.get(u)!).fill(u),
     );
     const picks: Upstream[] = [];
     const seen = new Set<string>();

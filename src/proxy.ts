@@ -984,10 +984,12 @@ export class ProxyHandler {
       : this.pool.select(attempts, opts.minBlock, methods);
     let downgraded = false;
     let upstreamMs = 0;
+    let effectiveMinBlock = opts.minBlock;
 
     if (picks.length === 0 && opts.minBlock !== undefined) {
       picks = this.pool.select(attempts, undefined, methods);
       downgraded = true;
+      effectiveMinBlock = undefined;
       if (opts.downgradeTo) requests = opts.downgradeTo;
     }
     if (picks.length === 0) {
@@ -1002,34 +1004,56 @@ export class ProxyHandler {
 
     const payload = requests.length === 1 ? requests[0] : requests;
     const queue = [...picks];
+    const tried = new Set<string>();
     let attemptIndex = 0;
-    while (queue.length > 0) {
-      // Exponential backoff between attempts (no delay before the first).
-      if (attemptIndex > 0) {
-        await sleep(retryDelayMs(attemptIndex, this.config.health));
-      }
-      const upstream = await this.nextPacedUpstream(queue);
-      try {
-        const callStart = performance.now();
-        const body = await upstream.call(payload);
-        upstreamMs += performance.now() - callStart;
-        upstreamRequests.inc({ upstream: upstream.name, result: "ok" });
-        const responses = Array.isArray(body) ? body : [body];
-        // A legal JSON-RPC error from the upstream is a definitive answer,
-        // not a reason to fail over.
-        return { responses, downgraded, upstreamMs, upstreamName: upstream.name };
-      } catch (err) {
-        if (err instanceof UpstreamTransportError) {
-          upstreamRequests.inc({ upstream: upstream.name, result: "error" });
-          this.logger?.warn(
-            `forwarding to ${upstream.name} failed, trying next upstream`,
-            err.cause ?? err.message,
-          );
-          attemptIndex += 1;
-          continue;
+    // Standby upstreams (weight 0) are held back until the regular pool is
+    // exhausted: either at selection time (pick() falls back to them when no
+    // regular upstream passes the filters) or here, after every regular
+    // attempt failed with a transport error. Pinned routes and write methods
+    // stay single-shot.
+    let standbyRound = false;
+    while (true) {
+      while (queue.length > 0) {
+        // Exponential backoff between attempts (no delay before the first).
+        if (attemptIndex > 0) {
+          await sleep(retryDelayMs(attemptIndex, this.config.health));
         }
-        throw err;
+        const upstream = await this.nextPacedUpstream(queue);
+        tried.add(upstream.name);
+        try {
+          const callStart = performance.now();
+          const body = await upstream.call(payload);
+          upstreamMs += performance.now() - callStart;
+          upstreamRequests.inc({ upstream: upstream.name, result: "ok" });
+          const responses = Array.isArray(body) ? body : [body];
+          // A legal JSON-RPC error from the upstream is a definitive answer,
+          // not a reason to fail over.
+          return { responses, downgraded, upstreamMs, upstreamName: upstream.name };
+        } catch (err) {
+          if (err instanceof UpstreamTransportError) {
+            upstreamRequests.inc({ upstream: upstream.name, result: "error" });
+            this.logger?.warn(
+              `forwarding to ${upstream.name} failed, trying next upstream`,
+              err.cause ?? err.message,
+            );
+            attemptIndex += 1;
+            continue;
+          }
+          throw err;
+        }
       }
+      // Queue exhausted: append one standby round unless already done, the
+      // route is pinned, or the batch carries no-retry (write) methods.
+      if (standbyRound || opts.pinned || noRetry) break;
+      standbyRound = true;
+      const backups = this.pool.selectStandby(
+        attempts,
+        effectiveMinBlock,
+        methods,
+        tried,
+      );
+      if (backups.length === 0) break;
+      queue.push(...backups);
     }
 
     return {

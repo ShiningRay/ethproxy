@@ -218,7 +218,7 @@ describe("UpstreamPool", () => {
     expect(counts.get("b")).toBe(50);
   });
 
-  it("parks weight-0 upstreams: polled and reported but never selected", async () => {
+  it("keeps weight-0 upstreams standby: skipped while regulars work, used when none do", async () => {
     const a = await startMockNode({});
     const b = await startMockNode({});
     const pool = new UpstreamPool(
@@ -232,14 +232,29 @@ describe("UpstreamPool", () => {
     expect(
       pool.status().upstreams.find((u) => u.name === "b")!.healthy,
     ).toBe(true);
+    // While the regular upstream is eligible the standby is never picked,
+    // neither as primary nor as failover.
     for (let i = 0; i < 10; i++) {
       expect(pool.select(1).map((u) => u.name)).toEqual(["a"]);
-      // The parked upstream must not appear in failover order either.
       expect(pool.select(5).map((u) => u.name)).toEqual(["a"]);
     }
+    // Once nothing regular is selectable the standby takes over.
+    a.set({ fail: true });
+    await pool.pollAll();
+    await pool.pollAll(); // failureThreshold 2
+    expect(
+      pool.status().upstreams.find((u) => u.name === "a")!.healthy,
+    ).toBe(false);
+    for (let i = 0; i < 5; i++) {
+      expect(pool.select(1).map((u) => u.name)).toEqual(["b"]);
+    }
+    // Recovery hands traffic back to the regular pool.
+    a.set({ fail: false });
+    await pool.pollAll();
+    expect(pool.select(1).map((u) => u.name)).toEqual(["a"]);
   });
 
-  it("treats positive weights below the 0.01 granularity as parked", async () => {
+  it("treats positive weights below the 0.01 granularity as standby", async () => {
     const a = await startMockNode({});
     const b = await startMockNode({});
     const pool = new UpstreamPool(
@@ -253,6 +268,39 @@ describe("UpstreamPool", () => {
     for (let i = 0; i < 10; i++) {
       expect(pool.select(1).map((u) => u.name)).toEqual(["a"]);
     }
+    a.set({ fail: true });
+    await pool.pollAll();
+    await pool.pollAll(); // failureThreshold 2
+    expect(pool.select(1).map((u) => u.name)).toEqual(["b"]);
+  });
+
+  it("selectStandby picks only weight-0 upstreams and honors exclude/minBlock", async () => {
+    const a = await startMockNode({});
+    const b = await startMockNode({});
+    const c = await startMockNode({});
+    const pool = new UpstreamPool(
+      [
+        { name: "a", url: a.url, weight: 1 },
+        { name: "b", url: b.url, weight: 0 },
+        { name: "c", url: c.url, weight: 0 },
+      ],
+      health,
+    );
+    await pool.pollAll();
+    // Only standby candidates, deduped, in round-robin order.
+    expect(pool.selectStandby(5).map((u) => u.name)).toEqual(["b", "c"]);
+    // Already-tried names are excluded.
+    expect(
+      pool.selectStandby(5, undefined, undefined, new Set(["b", "c"])),
+    ).toEqual([]);
+    // Regular pool untouched: select() never returns standby while a works.
+    expect(pool.select(5).map((u) => u.name)).toEqual(["a"]);
+    // minBlock applies to the standby pool as well.
+    b.set({ block: 97 });
+    c.set({ block: 97 });
+    await pool.pollAll();
+    expect(pool.selectStandby(5, 99).map((u) => u.name)).toEqual([]);
+    expect(pool.selectStandby(5, 97).map((u) => u.name)).toEqual(["b", "c"]);
   });
 
   it("spreads failover picks so neighbouring upstreams are not retried back to back", async () => {

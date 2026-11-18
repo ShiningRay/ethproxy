@@ -59,7 +59,7 @@ docker run -p 8545:8545 -v "$PWD/config.yaml:/app/config.yaml:ro" ethproxy
 
 | 配置 | 说明 | 默认 |
 |---|---|---|
-| `upstreams[].url` / `weight` | 上游节点地址与权重。权重取 0–100，支持小数（两位小数粒度），长期流量占比 = weight / 各上游 weight 之和；`0` 表示停选——仍参与健康轮询并显示在 `/status`，但不会被选中；负数非法，降权请用 `0.5` 这类小数 | 1 |
+| `upstreams[].url` / `weight` | 上游节点地址与权重。权重取 0–100，支持小数（两位小数粒度），长期流量占比 = weight / 各上游 weight 之和；`0` 表示备用——仍参与健康轮询并显示在 `/status`，但仅在没有任何正权重上游可用时才被选中（常规尝试全部失败后也会追加备用再试）；负数非法，降权请用 `0.5` 这类小数 | 1 |
 | `upstreams[].rateLimit` | 客户端侧令牌桶限速：限制代理发往该上游的请求速率（`requestsPerSecond`，可选 `burst`，缺省 ceil(速率)）。桶空时优先选其他上游，全都没有才等待；每 HTTP 请求计 1 令牌（批量算 1） | —（不限） |
 | `upstreams[].cooldownMs` | 该上游的限流冷却时长（覆盖 `upstreamCooldown.defaultMs`） | — |
 | `upstreams[].headers` | 附加到该上游每个请求的 HTTP 头：JSON-RPC POST（含健康轮询）与 WebSocket 握手均带上。头名大小写不敏感；值可能含 API key（配置文件勿入版本库） | — |

@@ -181,6 +181,65 @@ describe("ProxyHandler", () => {
     expect(node.hits.get("eth_blockNumber")).toBe(baseline);
   });
 
+  it("extends failed regular attempts with standby (weight-0) upstreams", async () => {
+    const regular = await startMockNode(1000, {
+      eth_getBalance: () => "0x1",
+    });
+    const standby = await startMockNode(1000, {
+      eth_getBalance: () => "0x2",
+    });
+    const { proxy } = await makeProxy([regular, standby], [1, 0]);
+
+    // Regular upstream fails at transport level (HTTP 500): the standby
+    // answers within the same request.
+    regular.setFail(true);
+    const res = await proxy.handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_getBalance",
+      params: ["0xabc", "0x3e8"],
+    });
+    expect(res).toMatchObject({ result: "0x2" });
+    expect(standby.hits.get("eth_getBalance") ?? 0).toBeGreaterThanOrEqual(1);
+
+    // With the regular upstream healthy again, the standby gets no traffic.
+    regular.setFail(false);
+    const res2 = await proxy.handle({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "eth_getBalance",
+      params: ["0xdef", "0x3e8"],
+    });
+    expect(res2).toMatchObject({ result: "0x1" });
+    expect(regular.hits.get("eth_getBalance") ?? 0).toBe(1);
+    expect(standby.hits.get("eth_getBalance")).toBe(1);
+  });
+
+  it("falls back to standby (weight-0) upstreams at selection time", async () => {
+    const regular = await startMockNode(1000, {
+      eth_getBalance: () => "0x1",
+    });
+    const standby = await startMockNode(1000, {
+      eth_getBalance: () => "0x2",
+    });
+    const { pool, proxy } = await makeProxy([regular, standby], [1, 0]);
+
+    // Regular upstream unhealthy before selection: the standby pool is the
+    // only selectable set, so the request goes straight to it.
+    regular.setFail(true);
+    await pool.pollAll();
+    await pool.pollAll(); // failureThreshold 2
+    const res = await proxy.handle({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_getBalance",
+      params: ["0xabc", "0x3e8"],
+    });
+    expect(res).toMatchObject({ result: "0x2" });
+    expect(regular.hits.get("eth_getBalance") ?? 0).toBe(0);
+    expect(standby.hits.get("eth_getBalance") ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
   it("translates explicit and implicit latest tags to the pool head", async () => {
     const node = await startMockNode(1000, {
       eth_getBalance: () => "0x1",

@@ -32,10 +32,14 @@ const upstreamSchema = z.object({
   /**
    * Selection weight: 0-100 with two-decimal granularity (internally scaled
    * to integer slots at 0.01 resolution). Long-run traffic share is
-   * weight / sum(weights) over healthy upstreams. `0` parks the upstream:
-   * health polling and the status page keep covering it, but it is never
-   * selected. Values below 0.005 round to zero slots (no traffic). Negative
-   * weights are invalid — use a 0-1 fraction to downweight.
+   * weight / sum(weights) over healthy upstreams. `0` marks the upstream as
+   * standby: it is still health-polled and shown on the status page, but is
+   * only selected when no positively weighted upstream can serve the
+   * request (unhealthy, rate-limit parked, too far behind, method-filtered
+   * out, or lacking a required block — and as an extra failover round after
+   * every regular attempt failed). Positive weights below 0.005 round to
+   * zero slots and become standby too. Negative weights are invalid — use a
+   * 0-1 fraction to downweight.
    */
   weight: z
     .number()

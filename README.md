@@ -58,7 +58,7 @@ See [config.example.yaml](config.example.yaml). Key options:
 
 | Option | Description | Default |
 |---|---|---|
-| `upstreams[].url` / `weight` / `wsUrl` | Upstream HTTP endpoint, weight, and WS endpoint (derived from `url` when unset). Weight: 0-100, fractions allowed (two-decimal granularity); long-run traffic share is weight / sum of weights. `0` parks the upstream — still health-checked and visible in `/status`, never selected. Negative values are invalid; use a `0.5`-style fraction to downweight below the default | 1 |
+| `upstreams[].url` / `weight` / `wsUrl` | Upstream HTTP endpoint, weight, and WS endpoint (derived from `url` when unset). Weight: 0-100, fractions allowed (two-decimal granularity); long-run traffic share is weight / sum of weights. `0` marks the upstream standby — still health-checked and visible in `/status`, but only selected when no positively weighted upstream can serve (and as an extra failover round after all regular attempts failed). Negative values are invalid; use a `0.5`-style fraction to downweight below the default | 1 |
 | `upstreams[].rateLimit` | Client-side pacing (token bucket) capping the request rate sent to this upstream: `requestsPerSecond` + optional `burst` (default ceil of the rate). An empty bucket prefers other upstreams — wait only when none is ready. One token per HTTP request (a batch counts once) | — (unlimited) |
 | `upstreams[].cooldownMs` | Per-upstream override of `upstreamCooldown.defaultMs` | — |
 | `upstreams[].headers` | Extra HTTP headers sent with every request to this upstream — JSON-RPC POSTs (including health polls) and the WebSocket handshake. Names are case-insensitive; values may carry API keys (keep the config out of VCS) | — |
